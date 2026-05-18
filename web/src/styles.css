@@ -1,0 +1,206 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: oklch(0.955 0.018 78);
+  --foreground: oklch(0.145 0.006 70);
+  --card: oklch(0.985 0.008 78);
+  --card-foreground: oklch(0.145 0.006 70);
+  --popover: oklch(0.992 0.006 78);
+  --popover-foreground: oklch(0.145 0.006 70);
+  --primary: oklch(0.22 0.01 65);
+  --primary-foreground: oklch(0.98 0.004 78);
+  --secondary: oklch(0.905 0.018 80);
+  --secondary-foreground: oklch(0.24 0.01 65);
+  --muted: oklch(0.89 0.015 79);
+  --muted-foreground: oklch(0.44 0.018 70);
+  --accent: oklch(0.72 0.142 65);
+  --accent-foreground: oklch(0.19 0.015 65);
+  --destructive: oklch(0.53 0.19 27);
+  --destructive-foreground: oklch(0.98 0.004 78);
+  --border: oklch(0.82 0.019 78);
+  --input: oklch(0.84 0.017 78);
+  --ring: oklch(0.62 0.12 65);
+  --success: oklch(0.52 0.105 168);
+  --success-foreground: oklch(0.98 0.006 160);
+  --warning: oklch(0.71 0.155 70);
+  --warning-foreground: oklch(0.18 0.016 70);
+  --radius: 0.5rem;
+  --sidebar: oklch(0.17 0.008 65);
+  --sidebar-foreground: oklch(0.91 0.011 78);
+  --sidebar-accent: oklch(0.72 0.142 65);
+  --sidebar-border: oklch(0.28 0.012 65);
+}
+
+@theme inline {
+  --font-sans: "Bahnschrift", "Aptos", "Microsoft YaHei UI", sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-border: var(--sidebar-border);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply min-h-screen bg-background text-foreground antialiased;
+    font-family: "Bahnschrift", "Aptos", "Microsoft YaHei UI", sans-serif;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    letter-spacing: 0;
+  }
+}
+
+@layer utilities {
+  .workbench-grid {
+    background-image:
+      linear-gradient(to right, rgb(24 24 27 / 0.045) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(24 24 27 / 0.04) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .dense-section {
+    @apply rounded-none border-y bg-card/86 px-4 py-5 shadow-sm sm:px-5 lg:px-6;
+  }
+
+  .control-label {
+    @apply text-[11px] font-semibold uppercase tracking-normal text-muted-foreground;
+  }
+
+  .truncate-path {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .color-control {
+    height: 2.5rem;
+    width: 100%;
+    cursor: pointer;
+    padding: 0.25rem;
+  }
+
+  .color-control::-webkit-color-swatch-wrapper {
+    padding: 0;
+  }
+
+  .color-control::-webkit-color-swatch {
+    border: 0;
+    border-radius: 0.25rem;
+  }
+
+  .color-control::-moz-color-swatch {
+    border: 0;
+    border-radius: 0.25rem;
+  }
+
+  .phone-preview-wrap {
+    display: flex;
+    justify-content: center;
+    border-radius: 0.5rem;
+    border: 1px solid var(--border);
+    background:
+      radial-gradient(circle at 50% 0%, rgb(255 255 255 / 0.2), transparent 34%),
+      color-mix(in oklch, var(--background) 86%, var(--muted));
+    padding: 1.25rem;
+  }
+
+  .phone-preview-device {
+    position: relative;
+    width: min(100%, 18.5rem);
+    border-radius: 2.25rem;
+    border: 0.75rem solid #171717;
+    background: #171717;
+    box-shadow: 0 18px 42px rgb(0 0 0 / 0.28), inset 0 0 0 1px rgb(255 255 255 / 0.08);
+  }
+
+  .phone-preview-device::before,
+  .phone-preview-device::after {
+    content: "";
+    position: absolute;
+    right: -0.95rem;
+    width: 0.18rem;
+    border-radius: 999px;
+    background: #2a2a2a;
+  }
+
+  .phone-preview-device::before {
+    top: 5.2rem;
+    height: 2.7rem;
+  }
+
+  .phone-preview-device::after {
+    top: 9rem;
+    height: 4.2rem;
+  }
+
+  .phone-preview-speaker {
+    position: absolute;
+    left: 50%;
+    top: 0.7rem;
+    z-index: 2;
+    height: 0.35rem;
+    width: 4rem;
+    transform: translateX(-50%);
+    border-radius: 999px;
+    background: rgb(0 0 0 / 0.72);
+  }
+
+  .phone-preview-screen {
+    aspect-ratio: 9 / 16;
+    overflow: hidden;
+    border-radius: 1.45rem;
+    background: #050505;
+  }
+
+  .phone-preview-home {
+    position: absolute;
+    bottom: 0.55rem;
+    left: 50%;
+    height: 0.23rem;
+    width: 5rem;
+    transform: translateX(-50%);
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.38);
+  }
+}

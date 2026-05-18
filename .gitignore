@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.bak*
+.Python
+.venv/
+venv/
+env/
+.env
+
+# Test and tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.cache/
+.playwright-cli/
+
+# Local agent/runtime state
+.agents/
+.codex_tmp*/
+
+# Build and generated output
+build/
+dist/
+node_modules/
+*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts
+*.egg-info/
+logs/
+output/
+digital_human_test/
+tmp/
+.tmp/
+.tmp_*/
+pytest-tmp*/
+.pytest-tmp*/
+pytest_tmp*/
+.pytest_tmp*/
+pytest_root_manual/
+pytest-cache-files-*/
+pytest_web_tmp/
+
+# Large local assets
+data/
+models/
+tools/
+
+# Temporary screenshots and media
+tmp_*.png
+tmp_*.jpg
+tmp_*.jpeg
+tmp_*.webp
+tmp_*.mp4
+tmp_*.wav
