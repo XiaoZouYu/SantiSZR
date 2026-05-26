@@ -419,10 +419,41 @@ function Ensure-HelperPytorchRuntime {
         return
     }
 
+    $voxcpmPython = Join-Path $ProjectRoot "tools\voxcpm_python\python.exe"
+    $tuilionnxPython = Join-Path $ProjectRoot "tools\tuilionnx_python\python.exe"
+    $cosyvoicePython = Join-Path $ProjectRoot "tools\cosyvoice_python\python.exe"
+    $missingRuntimeMessages = @()
+
+    if (-not (Test-Path -LiteralPath $voxcpmPython)) {
+        $missingRuntimeMessages += "VoxCPM helper runtime is missing: tools\voxcpm_python\python.exe"
+    }
+    if (
+        -not (Test-Path -LiteralPath $tuilionnxPython) `
+        -and -not (Test-Path -LiteralPath $cosyvoicePython)
+    ) {
+        $missingRuntimeMessages += "Avatar helper runtime is missing: provide tools\tuilionnx_python\python.exe or tools\cosyvoice_python\python.exe"
+    }
+
+    if ($missingRuntimeMessages.Count -gt 0) {
+        $message = @(
+            "Bundled helper runtimes are missing. The system prerequisites script installs Python/Node/uv and project dependencies, but it cannot recreate the large prebuilt model helper runtimes from pip alone.",
+            "",
+            "Copy these folders from a working SantiSZR machine into $ProjectRoot\tools:",
+            "  - tools\voxcpm_python",
+            "  - tools\tuilionnx_python or tools\cosyvoice_python",
+            "",
+            "Then run install-windows-prereqs.bat again so this script can update PyTorch for the current GPU.",
+            "",
+            "Missing:",
+            (($missingRuntimeMessages | ForEach-Object { "  - $_" }) -join "`n")
+        ) -join "`n"
+        throw $message
+    }
+
     $helperPythons = @(
-        [pscustomobject]@{ Name = "VoxCPM"; Path = Join-Path $ProjectRoot "tools\voxcpm_python\python.exe" },
-        [pscustomobject]@{ Name = "TuiliONNX/CosyVoice"; Path = Join-Path $ProjectRoot "tools\tuilionnx_python\python.exe" },
-        [pscustomobject]@{ Name = "TuiliONNX/CosyVoice"; Path = Join-Path $ProjectRoot "tools\cosyvoice_python\python.exe" }
+        [pscustomobject]@{ Name = "VoxCPM"; Path = $voxcpmPython },
+        [pscustomobject]@{ Name = "TuiliONNX/CosyVoice"; Path = $tuilionnxPython },
+        [pscustomobject]@{ Name = "TuiliONNX/CosyVoice"; Path = $cosyvoicePython }
     )
 
     $seen = @{}
@@ -470,6 +501,7 @@ function Ensure-HelperPytorchRuntime {
         if (-not (Test-HelperTorchMatches -TorchInfo $updatedInfo -WheelIndex $WheelIndex)) {
             throw "$($helper.Name) helper PyTorch install completed, but compatibility verification failed. torch=$($updatedInfo.Version), cuda=$($updatedInfo.Cuda), arch=$($updatedInfo.Arch -join ',')"
         }
+        Write-Host "$($helper.Name) helper PyTorch verified: torch $($updatedInfo.Version), CUDA $($updatedInfo.Cuda), arch=$($updatedInfo.Arch -join ',')."
     }
 }
 
