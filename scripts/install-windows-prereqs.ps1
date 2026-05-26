@@ -448,6 +448,34 @@ except Exception as exc:
     }
 }
 
+function Repair-BrokenHelperNumpyFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$HelperName,
+        [Parameter(Mandatory = $true)][string]$PythonExe
+    )
+
+    $pythonRoot = Split-Path -Parent $PythonExe
+    $sitePackages = Join-Path $pythonRoot "Lib\site-packages"
+    if (-not (Test-Path -LiteralPath $sitePackages)) {
+        throw "$HelperName helper site-packages directory was not found: $sitePackages"
+    }
+
+    $resolvedSitePackages = (Resolve-Path -LiteralPath $sitePackages).Path
+    $targets = @()
+    foreach ($pattern in @("numpy", "numpy.libs", "numpy-*.dist-info")) {
+        $targets += @(Get-ChildItem -LiteralPath $resolvedSitePackages -Force -Filter $pattern -ErrorAction SilentlyContinue)
+    }
+
+    foreach ($target in $targets) {
+        $resolvedTarget = (Resolve-Path -LiteralPath $target.FullName).Path
+        if (-not $resolvedTarget.StartsWith($resolvedSitePackages, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove unexpected numpy path outside site-packages: $resolvedTarget"
+        }
+        Write-Host "Removing broken $HelperName helper numpy path: $resolvedTarget"
+        Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
+    }
+}
+
 function Ensure-HelperNumpyRuntime {
     param(
         [Parameter(Mandatory = $true)][string]$HelperName,
@@ -477,6 +505,23 @@ function Ensure-HelperNumpyRuntime {
         }
         $installErrors += "$($index.Name): exit code $LASTEXITCODE"
         Write-Warning "numpy install from $($index.Name) failed. Trying the next index if available."
+    }
+
+    if (-not $installed) {
+        Write-Warning "$HelperName helper numpy could not be repaired by pip because the installed package metadata may be broken. Removing local numpy package files and retrying."
+        Repair-BrokenHelperNumpyFiles -HelperName $HelperName -PythonExe $PythonExe
+
+        $installErrors = @()
+        foreach ($index in (Get-PypiInstallIndexes)) {
+            Write-Host "Installing clean $HelperName helper numpy from $($index.Name) index: $($index.Url)..."
+            & $PythonExe -m pip install --no-cache-dir --no-deps "numpy==1.26.4" --index-url $index.Url
+            if ($LASTEXITCODE -eq 0) {
+                $installed = $true
+                break
+            }
+            $installErrors += "$($index.Name): exit code $LASTEXITCODE"
+            Write-Warning "clean numpy install from $($index.Name) failed. Trying the next index if available."
+        }
     }
 
     if (-not $installed) {
