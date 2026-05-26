@@ -460,6 +460,8 @@ function Repair-BrokenHelperNumpyFiles {
         throw "$HelperName helper site-packages directory was not found: $sitePackages"
     }
 
+    Stop-HelperPythonProcesses -HelperName $HelperName -PythonExe $PythonExe
+
     $resolvedSitePackages = (Resolve-Path -LiteralPath $sitePackages).Path
     $targets = @()
     foreach ($pattern in @("numpy", "numpy.libs", "numpy-*.dist-info")) {
@@ -472,7 +474,45 @@ function Repair-BrokenHelperNumpyFiles {
             throw "Refusing to remove unexpected numpy path outside site-packages: $resolvedTarget"
         }
         Write-Host "Removing broken $HelperName helper numpy path: $resolvedTarget"
-        Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
+        try {
+            Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
+        } catch {
+            throw "Could not remove broken $HelperName helper numpy path because it is still locked: $resolvedTarget. Close running SantiSZR/backend/helper processes and run this script again. Original error: $($_.Exception.Message)"
+        }
+    }
+}
+
+function Stop-HelperPythonProcesses {
+    param(
+        [Parameter(Mandatory = $true)][string]$HelperName,
+        [Parameter(Mandatory = $true)][string]$PythonExe
+    )
+
+    $pythonRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $PythonExe)).Path
+    $currentProcessId = $PID
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        if (-not $_.ProcessId -or $_.ProcessId -eq $currentProcessId) {
+            return $false
+        }
+        $exePath = if ($_.ExecutablePath) { [string]$_.ExecutablePath } else { "" }
+        $commandLine = if ($_.CommandLine) { [string]$_.CommandLine } else { "" }
+        return (
+            $exePath.StartsWith($pythonRoot, [StringComparison]::OrdinalIgnoreCase) `
+            -or $commandLine.IndexOf($pythonRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        )
+    })
+
+    foreach ($process in $processes) {
+        Write-Host "Stopping $HelperName helper process $($process.ProcessId): $($process.ExecutablePath)"
+        try {
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+        } catch {
+            Write-Warning "Could not stop $HelperName helper process $($process.ProcessId): $($_.Exception.Message)"
+        }
+    }
+
+    if ($processes.Count -gt 0) {
+        Start-Sleep -Seconds 2
     }
 }
 
