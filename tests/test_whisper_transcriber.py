@@ -27,6 +27,15 @@ def test_whisper_transcriber_requires_gpu_runtime(monkeypatch: pytest.MonkeyPatc
         transcriber._resolve_runtime()
 
 
+def test_whisper_transcriber_ctranslate2_runtime_exposes_models() -> None:
+    transcriber = WhisperTranscriber()
+
+    ctranslate2 = transcriber._ensure_ctranslate2_runtime()
+
+    assert hasattr(ctranslate2, "models")
+    assert hasattr(ctranslate2.models, "Whisper")
+
+
 def test_whisper_windows_dll_search_does_not_mutate_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("PATH", r"C:\base\path")
     monkeypatch.delenv("CUDA_PATH", raising=False)

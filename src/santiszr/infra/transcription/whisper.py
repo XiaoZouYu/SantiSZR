@@ -216,12 +216,15 @@ class WhisperTranscriber:
             module_file = getattr(existing_module, "__file__", "")
             try:
                 if module_file and Path(module_file).resolve() == shim_init.resolve():
+                    self._ensure_ctranslate2_models(existing_module)
                     return existing_module
             except Exception:
                 pass
 
         if not shim_init.exists():
-            return importlib.import_module("ctranslate2")
+            module = importlib.import_module("ctranslate2")
+            self._ensure_ctranslate2_models(module)
+            return module
 
         for module_name in list(sys.modules):
             if module_name == "ctranslate2" or module_name.startswith("ctranslate2."):
@@ -238,7 +241,19 @@ class WhisperTranscriber:
         module = importlib.util.module_from_spec(spec)
         sys.modules["ctranslate2"] = module
         spec.loader.exec_module(module)
+        self._ensure_ctranslate2_models(module)
         return module
+
+    def _ensure_ctranslate2_models(self, module: Any) -> None:
+        if getattr(module, "models", None) is not None:
+            return
+        try:
+            models_module = importlib.import_module("ctranslate2.models")
+            setattr(module, "models", models_module)
+        except Exception as exc:
+            raise RuntimeError(
+                "ctranslate2.models is unavailable. Reinstall the Python environment or run install-windows-prereqs.bat."
+            ) from exc
 
     def _warmup_model(self, model: Any) -> None:
         warmup_audio = self._silent_wav_buffer()
