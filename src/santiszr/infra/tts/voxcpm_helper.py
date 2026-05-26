@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from array import array
 import contextlib
 import hashlib
 import json
@@ -143,7 +144,6 @@ class VoxCPMRuntime:
             raise RuntimeError("Ultimate cloning requires prompt_text recognized from reference audio.")
 
         import torch
-        import torchaudio
 
         output_path = Path(output_path_raw).expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,7 +206,7 @@ class VoxCPMRuntime:
                     torch.cuda.empty_cache()
 
         final_waveform = _concat_waveforms(waveforms, sample_rate=int(model.sample_rate))
-        torchaudio.save(str(output_path), final_waveform, int(model.sample_rate))
+        _save_waveform_wav(output_path, final_waveform, int(model.sample_rate))
 
         requested_speed = float(request.get("speed") or 1.0)
         if abs(requested_speed - 1.0) > 1e-6:
@@ -528,6 +528,29 @@ def _concat_waveforms(waveforms: list["torch.Tensor"], *, sample_rate: int, gap_
             pieces.append(torch.zeros((waveform.shape[0], gap_samples), dtype=waveform.dtype))
         pieces.append(waveform)
     return torch.cat(pieces, dim=1)
+
+
+def _save_waveform_wav(output_path: Path, waveform: "torch.Tensor", sample_rate: int) -> None:
+    import torch
+
+    if sample_rate <= 0:
+        raise RuntimeError(f"Invalid VoxCPM2 sample rate: {sample_rate}")
+
+    if waveform.ndim == 1:
+        waveform = waveform.unsqueeze(0)
+    if waveform.ndim != 2:
+        raise RuntimeError(f"VoxCPM2 produced an unsupported waveform shape: {tuple(waveform.shape)}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    audio = waveform.detach().to(dtype=torch.float32).cpu().clamp(-1.0, 1.0)
+    pcm = (audio * 32767.0).round().to(torch.int16)
+    frames = array("h", pcm.transpose(0, 1).contiguous().view(-1).tolist()).tobytes()
+
+    with wave.open(str(output_path), "wb") as wav_file:
+        wav_file.setnchannels(int(pcm.shape[0]))
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(int(sample_rate))
+        wav_file.writeframes(frames)
 
 
 def _recommended_chunk_max_len(model: Any, text: str) -> int:

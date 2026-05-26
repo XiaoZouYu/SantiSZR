@@ -1,13 +1,16 @@
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+import wave
 
 import pytest
 
+from santiszr.infra.tts import voxcpm_helper
 from santiszr.infra.tts.voxcpm_helper import (
     VoxCPMRuntime,
     _InferenceProfile,
     _PreparedReferenceAudio,
+    _save_waveform_wav,
     _split_synthesis_text,
 )
 
@@ -95,7 +98,7 @@ def _runtime_for_prompt_cache(workspace: Path, prepared_path: Path) -> VoxCPMRun
         prepared_duration_sec=1.0,
         clipped=False,
     )
-    runtime._prepare_reference_audio = lambda _path: (prepared, [])  # type: ignore[method-assign]
+    runtime._prepare_reference_audio = lambda _path, **_kwargs: (prepared, [])  # type: ignore[method-assign]
     return runtime
 
 
@@ -148,9 +151,12 @@ def test_voxcpm_synthesize_ultimate_clone_uses_direct_generate(
         float32="float32",
         cuda=SimpleNamespace(is_available=lambda: False, empty_cache=lambda: None),
     )
-    fake_torchaudio = SimpleNamespace(save=lambda path, waveform, sample_rate: saved.append((path, waveform, sample_rate)))
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    monkeypatch.setitem(sys.modules, "torchaudio", fake_torchaudio)
+    monkeypatch.setattr(
+        voxcpm_helper,
+        "_save_waveform_wav",
+        lambda path, waveform, sample_rate: saved.append((str(path), waveform, sample_rate)),
+    )
     runtime._load_model = lambda: (model, [])  # type: ignore[method-assign]
 
     audio_path, provider, notes = runtime.synthesize(
@@ -178,3 +184,17 @@ def test_voxcpm_synthesize_ultimate_clone_uses_direct_generate(
     assert len(saved) == 1
     assert saved[0][0] == str(output_path.resolve())
     assert saved[0][2] == 16000
+
+
+def test_save_waveform_wav_uses_stdlib_wave(temp_workspace: Path) -> None:
+    torch = pytest.importorskip("torch")
+    output_path = temp_workspace / "out.wav"
+    waveform = torch.tensor([[0.0, 0.5, -0.5]], dtype=torch.float32)
+
+    _save_waveform_wav(output_path, waveform, 16000)
+
+    with wave.open(str(output_path), "rb") as wav_file:
+        assert wav_file.getnchannels() == 1
+        assert wav_file.getsampwidth() == 2
+        assert wav_file.getframerate() == 16000
+        assert wav_file.getnframes() == 3
