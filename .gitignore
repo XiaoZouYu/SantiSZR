@@ -51,6 +51,7 @@ models/
 tools/
 
 # Temporary screenshots and media
+*.zip
 tmp_*.png
 tmp_*.jpg
 tmp_*.jpeg

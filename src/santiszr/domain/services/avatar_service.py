@@ -42,8 +42,6 @@ class AvatarService:
                 subtitle_style=request.subtitle_style,
                 background_video_path=reference_video_path,
                 overlay_text=request.overlay_text,
-                resolution=request.resolution,
-                fps=request.fps,
                 batch_size=request.batch_size,
                 sync_offset=request.sync_offset,
                 scale_h=request.scale_h,

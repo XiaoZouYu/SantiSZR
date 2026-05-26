@@ -17,6 +17,7 @@ WORKSPACE_SUBDIRECTORIES = (
     "cover",
     "bgm",
     "publish",
+    "pip",
     "uploads",
     "reference",
     "drafts",
@@ -45,6 +46,8 @@ def ensure_workspace_layout(workspace: str | Path) -> Path:
         (workspace_path / name).mkdir(parents=True, exist_ok=True)
     (workspace_path / "reference" / "audio").mkdir(parents=True, exist_ok=True)
     (workspace_path / "reference" / "video").mkdir(parents=True, exist_ok=True)
+    (workspace_path / "pip" / "image").mkdir(parents=True, exist_ok=True)
+    (workspace_path / "pip" / "video").mkdir(parents=True, exist_ok=True)
     return workspace_path
 
 

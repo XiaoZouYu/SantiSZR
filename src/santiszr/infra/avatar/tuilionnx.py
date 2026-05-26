@@ -56,8 +56,6 @@ class TuiliOnnxAdapter:
         subtitle_style: SubtitleStyle | None = None,
         background_video_path: str | Path | None = None,
         overlay_text: str | None = None,
-        resolution: str = "1080p",
-        fps: int = 25,
         batch_size: int = 4,
         sync_offset: float = 0.0,
         scale_h: float = 1.6,
@@ -66,7 +64,7 @@ class TuiliOnnxAdapter:
         beautify_teeth: bool = False,
         add_ai_watermark: bool = False,
     ) -> tuple[Path, Path | None, list[str]]:
-        del model_id, resolution, fps
+        del model_id
 
         reference_video_path = Path(background_video_path).expanduser().resolve() if background_video_path else None
         if reference_video_path is None:

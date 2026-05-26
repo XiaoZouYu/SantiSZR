@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from santiszr.domain.schemas.common import ErrorInfo
 
@@ -11,6 +11,33 @@ class SubtitleStyle(BaseModel):
     color: str = "#FFFFFF"
     outline_color: str = "#000000"
     bottom_margin: int = 72
+    template: str = "short_video"
+    highlight_keywords: list[str] = Field(default_factory=list)
+    highlight_color: str = "#FF3B30"
+
+    @field_validator("highlight_keywords", mode="before")
+    @classmethod
+    def normalize_highlight_keywords(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw_items = value.replace("，", ",").replace("、", ",").split(",")
+        elif isinstance(value, list):
+            raw_items = [str(item) for item in value]
+        else:
+            raw_items = [str(value)]
+
+        seen: set[str] = set()
+        keywords: list[str] = []
+        for item in raw_items:
+            keyword = item.strip()
+            if not keyword or keyword in seen:
+                continue
+            seen.add(keyword)
+            keywords.append(keyword)
+            if len(keywords) >= 12:
+                break
+        return keywords
 
 
 class SubtitleRequest(BaseModel):
@@ -34,8 +61,11 @@ class SubtitleSegment(BaseModel):
 class SubtitleResult(BaseModel):
     success: bool
     srt_path: str | None = None
+    ass_path: str | None = None
     burned_video_path: str | None = None
     subtitle_text: str | None = None
+    ass_text: str | None = None
+    subtitle_format: str = "ass"
     segments: list[SubtitleSegment] = Field(default_factory=list)
     generated_by: str | None = None
     corrected: bool = False

@@ -59,11 +59,14 @@ def test_select_workspace_initializes_layout_and_persists_recent_state() -> None
             "cover",
             "bgm",
             "publish",
+            "pip",
             "uploads",
             "drafts",
             "postprocess",
         ):
             assert (workspace / name).exists()
+        assert (workspace / "pip" / "image").exists()
+        assert (workspace / "pip" / "video").exists()
         assert (workspace / "workspace-manifest.json").exists()
 
 
@@ -91,3 +94,32 @@ def test_scan_workspace_assets_restores_audio_and_linked_text_without_manifest()
         assert snapshot.generated_audio[0].text_preview == "Second generated script body for audio two."
         assert snapshot.generated_audio[0].relative_path == "tts/2.wav"
         assert snapshot.generated_audio[0].file_ref == "workspace/tts/2.wav"
+
+
+def test_scan_workspace_assets_lists_only_pip_library_assets_for_pip() -> None:
+    with _test_root() as tmp_path:
+        settings = _settings(tmp_path)
+        workspace = tmp_path / "manual-workspace"
+        pip_image = workspace / "pip" / "image" / "overlay.png"
+        pip_video = workspace / "pip" / "video" / "clip.mp4"
+        cover_image = workspace / "cover" / "cover.png"
+        avatar_video = workspace / "avatar" / "avatar.mp4"
+
+        pip_image.parent.mkdir(parents=True, exist_ok=True)
+        pip_video.parent.mkdir(parents=True, exist_ok=True)
+        cover_image.parent.mkdir(parents=True, exist_ok=True)
+        avatar_video.parent.mkdir(parents=True, exist_ok=True)
+        pip_image.write_bytes(b"pip image")
+        pip_video.write_bytes(b"pip video")
+        cover_image.write_bytes(b"cover image")
+        avatar_video.write_bytes(b"avatar video")
+
+        snapshot = scan_workspace_assets(workspace, settings)
+
+        assert {asset.relative_path for asset in snapshot.pip_assets} == {
+            "pip/image/overlay.png",
+            "pip/video/clip.mp4",
+        }
+        assert {asset.source_dir for asset in snapshot.pip_assets} == {"pip/image", "pip/video"}
+        assert all("cover/" not in asset.relative_path for asset in snapshot.pip_assets)
+        assert all("avatar/" not in asset.relative_path for asset in snapshot.pip_assets)

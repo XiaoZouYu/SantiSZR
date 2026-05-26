@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from santiszr.domain.schemas.subtitle import SubtitleRequest
+from santiszr.domain.schemas.subtitle import SubtitleRequest, SubtitleStyle
 from santiszr.domain.services.subtitle_service import SubtitleService
 
 
@@ -113,6 +113,34 @@ def test_subtitle_reference_text_without_punctuation_is_split_into_short_units()
 
     assert len(units) > 1
     assert all(service._unit_length(unit) <= 20 for unit in units)
+
+
+def test_subtitle_service_writes_ass_with_keyword_highlight(sample_audio: Path, temp_workspace: Path) -> None:
+    service = SubtitleService(generator=FakeSubtitleGenerator())
+    result = service.generate(
+        SubtitleRequest(
+            audio_path=str(sample_audio),
+            reference_text="AI helps teams move faster. AI improves daily work.",
+            burn_in=False,
+            workspace=str(temp_workspace),
+            output_name="subtitle-ass",
+            style=SubtitleStyle(
+                template="short_video",
+                highlight_keywords=["AI"],
+                highlight_color="#FF0000",
+            ),
+        )
+    )
+
+    assert result.success is True
+    assert result.srt_path
+    assert result.ass_path
+    assert Path(result.srt_path).exists()
+    assert Path(result.ass_path).exists()
+    ass_text = Path(result.ass_path).read_text(encoding="utf-8")
+    assert r"{\b1" in ass_text
+    assert r"\c&H0000FF&" in ass_text
+    assert "AI" in ass_text
 
 
 def test_subtitle_service_can_correct_generated_srt(sample_audio: Path, temp_workspace: Path) -> None:

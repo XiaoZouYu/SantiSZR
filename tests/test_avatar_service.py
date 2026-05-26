@@ -52,7 +52,6 @@ def test_avatar_service_renders_with_uploaded_reference_video(
             subtitle_style=SubtitleStyle(font_size=28, bottom_margin=84),
             reference_video_path=str(sample_video),
             overlay_text="avatar-test",
-            resolution="160x90",
         )
     )
 

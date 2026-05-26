@@ -63,6 +63,7 @@ class WorkspaceAssets(BaseModel):
     subtitles: list[WorkspaceAsset] = Field(default_factory=list)
     avatar_videos: list[WorkspaceAsset] = Field(default_factory=list)
     styled_videos: list[WorkspaceAsset] = Field(default_factory=list)
+    pip_assets: list[WorkspaceAsset] = Field(default_factory=list)
     covers: list[WorkspaceAsset] = Field(default_factory=list)
     drafts: list[WorkspaceAsset] = Field(default_factory=list)
 
@@ -143,11 +144,18 @@ def scan_workspace_assets(workspace: str | Path, settings: AppSettings) -> Works
         source_dirs=("subtitle", "bgm", "postprocess"),
         suffixes=_VIDEO_SUFFIXES,
     )
+    pip_assets = _scan_generic_assets(
+        workspace_path,
+        settings,
+        kind="pip_asset",
+        source_dirs=("pip/image", "pip/video"),
+        suffixes=_IMAGE_SUFFIXES | _VIDEO_SUFFIXES,
+    )
     covers = _scan_generic_assets(
         workspace_path,
         settings,
         kind="cover",
-        source_dirs=("cover",),
+        source_dirs=("cover", "uploads/image", "publish"),
         suffixes=_IMAGE_SUFFIXES,
     )
     drafts = _scan_draft_assets(workspace_path, settings)
@@ -163,6 +171,7 @@ def scan_workspace_assets(workspace: str | Path, settings: AppSettings) -> Works
         subtitles=subtitles,
         avatar_videos=avatar_videos,
         styled_videos=styled_videos,
+        pip_assets=pip_assets,
         covers=covers,
         drafts=drafts,
     )

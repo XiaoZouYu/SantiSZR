@@ -11,6 +11,10 @@ from pathlib import Path
 
 from santiszr.config.settings import load_settings
 from santiszr.domain.schemas.subtitle import SubtitleSegment, SubtitleStyle
+from santiszr.infra.subtitle import AssSubtitleRenderer, parse_srt_segments
+
+
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
 
 
 class FFmpegAdapter:
@@ -206,6 +210,7 @@ class FFmpegAdapter:
         prepared_subtitle_path, cleanup_subtitle_path = self._prepare_subtitle_file(
             subtitle_path,
             output.parent / f"{output.stem}.wrapped.srt",
+            style=effective_style,
             frame_width=video_meta.get("width"),
             frame_height=video_meta.get("height"),
             font_size=effective_style.font_size,
@@ -260,6 +265,7 @@ class FFmpegAdapter:
         prepared_subtitle_path, cleanup_subtitle_path = self._prepare_subtitle_file(
             subtitle_path,
             output.parent / f"{output.stem}.wrapped.srt",
+            style=effective_style,
             frame_width=frame_width,
             frame_height=frame_height,
             font_size=effective_style.font_size,
@@ -319,8 +325,6 @@ class FFmpegAdapter:
         if temp_output.exists():
             temp_output.unlink()
         filters = [f"scale={resolution}"]
-        if subtitle_path:
-            filters.append(self._subtitle_filter(subtitle_path, style or SubtitleStyle()))
         if overlay_text:
             safe_text = overlay_text.replace(":", r"\:").replace("'", r"\'")
             filters.append(
@@ -341,6 +345,31 @@ class FFmpegAdapter:
                     "-i",
                     f"color=c=0x1b2230:s={resolution}:r={fps}:d={duration:.3f}",
                 ]
+            )
+        cleanup_subtitle_path: Path | None = None
+        if subtitle_path:
+            frame_width, frame_height = self._parse_resolution(resolution)
+            effective_style, side_margin, _ = self._effective_subtitle_style(
+                style or SubtitleStyle(),
+                frame_width=frame_width,
+                frame_height=frame_height,
+            )
+            prepared_subtitle_path, cleanup_subtitle_path = self._prepare_subtitle_file(
+                subtitle_path,
+                output.parent / f"{output.stem}.wrapped.srt",
+                style=effective_style,
+                frame_width=frame_width,
+                frame_height=frame_height,
+                font_size=effective_style.font_size,
+                side_margin=side_margin,
+            )
+            filters.append(
+                self._subtitle_filter(
+                    prepared_subtitle_path,
+                    effective_style,
+                    frame_width=frame_width,
+                    frame_height=frame_height,
+                )
             )
         command.extend(
             [
@@ -372,6 +401,9 @@ class FFmpegAdapter:
             if temp_output.exists():
                 temp_output.unlink()
             raise
+        finally:
+            if cleanup_subtitle_path and cleanup_subtitle_path.exists():
+                cleanup_subtitle_path.unlink(missing_ok=True)
         return output
 
     def mix_background_music(
@@ -413,6 +445,114 @@ class FFmpegAdapter:
         )
         return output
 
+    def overlay_picture_in_picture(
+        self,
+        video_path: str | Path,
+        source_path: str | Path,
+        output_path: str | Path,
+        *,
+        start_sec: float = 0.0,
+        end_sec: float | None = None,
+        position: str = "top_right",
+        scale: float = 0.28,
+        border_width: int = 0,
+        border_color: str = "#FFFFFF",
+        shadow: bool = False,
+        opacity: float = 1.0,
+        animation: str = "none",
+        fade_duration: float = 0.35,
+        loop: bool = True,
+        mute: bool = True,
+    ) -> Path:
+        self._ensure_ffmpeg()
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        base_duration = max(self.probe_duration(video_path), 0.1)
+        start = max(float(start_sec), 0.0)
+        if start >= base_duration:
+            start = 0.0
+        end = base_duration if end_sec is None else max(float(end_sec), 0.0)
+        if end <= start:
+            end = base_duration
+        end = min(end, base_duration)
+
+        source = Path(source_path)
+        is_image = source.suffix.lower() in _IMAGE_SUFFIXES
+        pip_width, pip_height = self._picture_in_picture_box(video_path, scale)
+        x_expr, y_expr = self._picture_in_picture_position(position)
+        pip_filters = [
+            f"setpts=PTS-STARTPTS+{start:.3f}/TB",
+            f"scale={pip_width}:{pip_height}:force_original_aspect_ratio=decrease",
+            "setsar=1",
+            "format=rgba",
+        ]
+        border = max(0, min(int(border_width), 48))
+        if border > 0:
+            pip_filters.append(
+                f"drawbox=x=0:y=0:w=iw:h=ih:color={self._ffmpeg_color(border_color)}:t={border}"
+            )
+        alpha = max(0.1, min(float(opacity), 1.0))
+        if alpha < 0.999:
+            pip_filters.append(f"colorchannelmixer=aa={alpha:.3f}")
+
+        normalized_animation = animation.strip().lower().replace("-", "_")
+        fade = min(max(float(fade_duration), 0.0), max((end - start) / 2.0, 0.0))
+        if fade > 0 and normalized_animation in {"fade", "fade_in", "fade_out"}:
+            if normalized_animation in {"fade", "fade_in"}:
+                pip_filters.append(f"fade=t=in:st={start:.3f}:d={fade:.3f}:alpha=1")
+            if normalized_animation in {"fade", "fade_out"}:
+                pip_filters.append(f"fade=t=out:st={max(start, end - fade):.3f}:d={fade:.3f}:alpha=1")
+
+        overlay_enable = f"enable='between(t,{start:.3f},{end:.3f})':eof_action=pass:shortest=0"
+        pip_chain = f"[1:v]{','.join(pip_filters)}[pipstyled]"
+        if shadow:
+            shadow_x = self._offset_overlay_expr(x_expr, 8)
+            shadow_y = self._offset_overlay_expr(y_expr, 8)
+            filter_complex = (
+                f"{pip_chain};"
+                "[pipstyled]split[pip][shadow_src];"
+                "[shadow_src]colorchannelmixer=rr=0:gg=0:bb=0:aa=0.320,boxblur=8:1[shadow];"
+                f"[0:v][shadow]overlay={shadow_x}:{shadow_y}:{overlay_enable}[basepip];"
+                f"[basepip][pip]overlay={x_expr}:{y_expr}:{overlay_enable}[vout]"
+            )
+        else:
+            filter_complex = (
+                f"{pip_chain};"
+                f"[0:v][pipstyled]overlay={x_expr}:{y_expr}:{overlay_enable}[vout]"
+            )
+
+        command = [self.ffmpeg_path, "-y", "-i", str(video_path)]
+        if is_image:
+            command.extend(["-loop", "1", "-i", str(source_path)])
+        else:
+            if loop:
+                command.extend(["-stream_loop", "-1"])
+            command.extend(["-i", str(source_path)])
+
+        command.extend(
+            [
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[vout]",
+                "-map",
+                "0:a?",
+                "-t",
+                f"{base_duration:.3f}",
+                "-pix_fmt",
+                "yuv420p",
+                *self._gpu_video_codec_args(),
+                "-c:a",
+                "copy" if mute else "aac",
+                "-movflags",
+                "+faststart",
+                str(output),
+            ]
+        )
+        self._run(command, timeout_sec=max(60.0, base_duration * 4.0 + 30.0))
+        return output
+
     def render_cover_image(
         self,
         video_path: str | Path,
@@ -432,7 +572,6 @@ class FFmpegAdapter:
         output.parent.mkdir(parents=True, exist_ok=True)
         filters = [
             "scale=1080:1920:force_original_aspect_ratio=decrease",
-            "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black",
             "setsar=1",
         ]
         title_y = {
@@ -463,9 +602,11 @@ class FFmpegAdapter:
                     font_name=font_name,
                     font_size=max(int(font_size * 0.72), 28),
                     font_color=highlight_color,
-                    box_color="black@0.15",
+                    border_color="black@0.45",
+                    border_width=2,
                 )
             )
+        filters.append("pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black")
         command = [self.ffmpeg_path, "-y"]
         if timestamp_sec > 0:
             command.extend(["-ss", f"{timestamp_sec:.3f}"])
@@ -485,6 +626,8 @@ class FFmpegAdapter:
         frame_height: int | float | None = None,
     ) -> str:
         escaped_path = str(Path(subtitle_path).resolve()).replace("\\", "/").replace(":", r"\:")
+        if Path(subtitle_path).suffix.lower() in {".ass", ".ssa"}:
+            return f"subtitles='{escaped_path}'"
         effective_style, side_margin, outline = self._effective_subtitle_style(
             style,
             frame_width=frame_width,
@@ -514,12 +657,15 @@ class FFmpegAdapter:
         width = int(frame_width or 0)
         height = int(frame_height or 0)
         if width > 0 and height > 0:
-            max_font_by_height = max(18, int(height * 0.055))
-            max_font_by_width = max(18, int(width * 0.04))
+            if height > width:
+                max_font_by_height = max(24, int(height * 0.11))
+                max_font_by_width = max(24, int(width * 0.16))
+            else:
+                max_font_by_height = max(18, int(height * 0.08))
+                max_font_by_width = max(18, int(width * 0.08))
             font_size = min(font_size, max_font_by_height, max_font_by_width)
             if height > width:
-                font_size = max(int(round(font_size * 0.5)), 12)
-                min_bottom_margin = max(24, int(height * 0.025), font_size + 14)
+                min_bottom_margin = max(24, int(height * 0.025), int(font_size * 1.2))
             else:
                 min_bottom_margin = max(int(height * 0.05), font_size + 18)
             side_margin = max(24, int(width * 0.06))
@@ -535,6 +681,9 @@ class FFmpegAdapter:
                 color=style.color,
                 outline_color=style.outline_color,
                 bottom_margin=bottom_margin,
+                template=style.template,
+                highlight_keywords=style.highlight_keywords,
+                highlight_color=style.highlight_color,
             ),
             side_margin,
             outline,
@@ -545,26 +694,46 @@ class FFmpegAdapter:
         subtitle_path: str | Path,
         temp_path: str | Path,
         *,
+        style: SubtitleStyle,
         frame_width: int | float | None,
         frame_height: int | float | None,
         font_size: int,
         side_margin: int,
     ) -> tuple[Path, Path | None]:
         source_path = Path(subtitle_path).resolve()
+        if source_path.suffix.lower() in {".ass", ".ssa"}:
+            return source_path, None
+
+        original_text = source_path.read_text(encoding="utf-8")
+        if self._style_uses_ass_features(style):
+            segments = parse_srt_segments(original_text)
+            if segments:
+                ass_path = Path(temp_path).resolve().with_suffix(".ass")
+                AssSubtitleRenderer().write_ass(
+                    segments,
+                    ass_path,
+                    style=style,
+                    frame_width=frame_width,
+                    frame_height=frame_height,
+                )
+                return ass_path, ass_path
+
         wrapped_text = self._rewrap_srt_content(
-            source_path.read_text(encoding="utf-8"),
+            original_text,
             frame_width=frame_width,
             frame_height=frame_height,
             font_size=font_size,
             side_margin=side_margin,
         )
-        original_text = source_path.read_text(encoding="utf-8")
         if wrapped_text == original_text:
             return source_path, None
 
         wrapped_path = Path(temp_path).resolve()
         wrapped_path.write_text(wrapped_text, encoding="utf-8")
         return wrapped_path, wrapped_path
+
+    def _style_uses_ass_features(self, style: SubtitleStyle) -> bool:
+        return bool(style.template.strip()) or bool(style.highlight_keywords)
 
     def _rewrap_srt_content(
         self,
@@ -662,7 +831,8 @@ class FFmpegAdapter:
         font_name: str,
         font_size: int,
         font_color: str,
-        box_color: str = "black@0.45",
+        border_color: str = "black@0.62",
+        border_width: int = 3,
     ) -> str:
         safe_text = (
             text.replace("\\", "\\\\")
@@ -678,10 +848,42 @@ class FFmpegAdapter:
             f"y={y}:"
             f"fontsize={max(font_size, 12)}:"
             f"fontcolor={self._normalize_drawtext_color(font_color)}:"
-            "box=1:"
-            f"boxcolor={box_color}:"
-            "boxborderw=24"
+            f"bordercolor={border_color}:"
+            f"borderw={max(int(border_width), 0)}"
         )
+
+    def _picture_in_picture_box(self, video_path: str | Path, scale: float) -> tuple[int, int]:
+        meta = self.probe_video_meta(video_path)
+        base_width = int(meta.get("width") or 1080)
+        base_height = int(meta.get("height") or 1920)
+        clamped_scale = max(0.1, min(float(scale), 0.6))
+        max_edge = max(base_width, base_height)
+        target_edge = max(64, int(round(max_edge * clamped_scale)))
+        return target_edge + (target_edge % 2), target_edge + (target_edge % 2)
+
+    def _ffmpeg_color(self, value: str, *, alpha: float = 1.0) -> str:
+        normalized = self._normalize_hex_color(value, fallback="FFFFFF")
+        return f"0x{normalized}@{max(0.0, min(float(alpha), 1.0)):.3f}"
+
+    def _offset_overlay_expr(self, expression: str, offset: int) -> str:
+        stripped = expression.strip()
+        if stripped.isdigit():
+            return str(int(stripped) + offset)
+        margin = "24"
+        if stripped.endswith(f"-{margin}"):
+            return f"{stripped[:-len(margin)]}{max(0, int(margin) - offset)}"
+        return f"({stripped})+{offset}"
+
+    def _picture_in_picture_position(self, position: str) -> tuple[str, str]:
+        margin = "24"
+        normalized = position.strip().lower().replace("-", "_")
+        positions = {
+            "top_left": (margin, margin),
+            "top_right": (f"main_w-overlay_w-{margin}", margin),
+            "bottom_left": (margin, f"main_h-overlay_h-{margin}"),
+            "bottom_right": (f"main_w-overlay_w-{margin}", f"main_h-overlay_h-{margin}"),
+        }
+        return positions.get(normalized, positions["top_right"])
 
     def _to_ass_color(self, value: str, *, fallback: str) -> str:
         normalized = self._normalize_hex_color(value, fallback=fallback)

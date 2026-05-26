@@ -7,6 +7,8 @@ from santiszr.infra.llm.client import LLMClient
 
 
 class SubtitleCorrector:
+    _TRAILING_SUBTITLE_PUNCTUATION_PATTERN = re.compile(r"[\s\u3000]*[，。！？；：、,.!?;:]+[\s\u3000]*$")
+
     def __init__(self, llm_client: LLMClient | None = None) -> None:
         self.llm_client = llm_client or LLMClient()
 
@@ -30,13 +32,16 @@ class SubtitleCorrector:
             "请对下面的字幕文本逐行纠错，只修正错别字、多音字和明显识别错误。"
             "不要改变每一行的数量，不要新增解释，不要合并或拆分行。"
             "请直接返回修正后的文本，每行对应原字幕的一行。\n"
+            "Every returned subtitle line must end without punctuation. "
+            "Remove trailing punctuation marks such as ，。！？；：、,.!?;: from the end of each line.\n"
             f"{combined_text}"
         )
         response = self.llm_client.generate(
             prompt,
             system_prompt=(
                 "You are a Chinese subtitle correction assistant. "
-                "Preserve line count and timing alignment. Return plain text lines only."
+                "Preserve line count and timing alignment. Return plain text lines only. "
+                "Do not let any returned line end with punctuation."
             ),
             temperature=0.2,
         )
@@ -47,6 +52,7 @@ class SubtitleCorrector:
             else:
                 corrected_lines = corrected_lines[: len(entries)]
 
+        corrected_lines = [self._strip_terminal_punctuation(line) for line in corrected_lines]
         corrected_content = self._render_entries(entries, corrected_lines)
         path.write_text(corrected_content, encoding="utf-8")
         backup_path = path.with_suffix(path.suffix + ".backup")
@@ -85,3 +91,12 @@ class SubtitleCorrector:
                 )
             )
         return "\n\n".join(blocks) + "\n"
+
+    def _strip_terminal_punctuation(self, text: str) -> str:
+        lines = [line.rstrip() for line in text.strip().splitlines()]
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if not lines:
+            return ""
+        lines[-1] = self._TRAILING_SUBTITLE_PUNCTUATION_PATTERN.sub("", lines[-1]).rstrip()
+        return "\n".join(lines)

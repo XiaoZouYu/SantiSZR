@@ -16,9 +16,11 @@ class PostProcessService:
     def process(self, request: PostProcessRequest) -> PostProcessResult:
         notes: list[str] = []
         steps_applied: list[str] = []
+        pip_video_path: Path | None = None
         subtitle_video_path: Path | None = None
         bgm_video_path: Path | None = None
         cover_image_path: Path | None = None
+        pip_source_path: Path | None = None
         cover_source_path: Path | None = None
         bgm_source_path: Path | None = None
 
@@ -36,6 +38,32 @@ class PostProcessService:
             output_base = sanitize_filename(request.output_name or source_video.stem, fallback="postprocess")
 
             current_video = source_video
+
+            if request.picture_in_picture.enabled:
+                if not request.picture_in_picture.source_path:
+                    raise ValueError("Picture-in-picture source path is required when enabled.")
+                pip_source_path = Path(request.picture_in_picture.source_path).expanduser().resolve()
+                if not pip_source_path.exists():
+                    raise FileNotFoundError(f"Picture-in-picture source does not exist: {pip_source_path}")
+                pip_video_path = self.ffmpeg.overlay_picture_in_picture(
+                    current_video,
+                    pip_source_path,
+                    postprocess_dir / f"{output_base}_pip.mp4",
+                    start_sec=request.picture_in_picture.start_sec,
+                    end_sec=request.picture_in_picture.end_sec,
+                    position=request.picture_in_picture.position,
+                    scale=request.picture_in_picture.scale,
+                    border_width=request.picture_in_picture.border_width,
+                    border_color=request.picture_in_picture.border_color,
+                    shadow=request.picture_in_picture.shadow,
+                    opacity=request.picture_in_picture.opacity,
+                    animation=request.picture_in_picture.animation,
+                    fade_duration=request.picture_in_picture.fade_duration,
+                    loop=request.picture_in_picture.loop,
+                    mute=request.picture_in_picture.mute,
+                )
+                current_video = pip_video_path
+                steps_applied.append("pip")
 
             if request.burn_subtitles:
                 if not request.subtitle_path:
@@ -96,9 +124,11 @@ class PostProcessService:
             return PostProcessResult(
                 success=True,
                 final_video_path=str(current_video),
+                pip_video_path=str(pip_video_path) if pip_video_path else None,
                 subtitle_video_path=str(subtitle_video_path) if subtitle_video_path else None,
                 bgm_video_path=str(bgm_video_path) if bgm_video_path else None,
                 cover_image_path=str(cover_image_path) if cover_image_path else None,
+                pip_source_path=str(pip_source_path) if pip_source_path else None,
                 cover_source_path=str(cover_source_path) if cover_source_path else None,
                 bgm_source_path=str(bgm_source_path) if bgm_source_path else None,
                 steps_applied=steps_applied,
@@ -108,9 +138,11 @@ class PostProcessService:
             return PostProcessResult(
                 success=False,
                 final_video_path=str(source_video) if "source_video" in locals() else None,
+                pip_video_path=str(pip_video_path) if pip_video_path else None,
                 subtitle_video_path=str(subtitle_video_path) if subtitle_video_path else None,
                 bgm_video_path=str(bgm_video_path) if bgm_video_path else None,
                 cover_image_path=str(cover_image_path) if cover_image_path else None,
+                pip_source_path=str(pip_source_path) if pip_source_path else None,
                 cover_source_path=str(cover_source_path) if cover_source_path else None,
                 bgm_source_path=str(bgm_source_path) if bgm_source_path else None,
                 steps_applied=steps_applied,

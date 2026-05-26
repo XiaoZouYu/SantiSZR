@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react"
 import type { ComponentProps, ReactNode } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -83,4 +84,82 @@ export function TokenBadge({
 
 export function SectionButton(props: ComponentProps<typeof Button>) {
   return <Button size="sm" {...props} />
+}
+
+export function VideoPreviewPanel({
+  title,
+  subtitle,
+  badges,
+  children,
+  footer,
+  className,
+  bodyClassName,
+}: {
+  title: string
+  subtitle?: string
+  badges?: ReactNode
+  children: ReactNode
+  footer?: ReactNode
+  className?: string
+  bodyClassName?: string
+}) {
+  return (
+    <div className={cn("overflow-hidden rounded-md border border-border bg-background/55", className)}>
+      <div className="flex min-h-14 flex-wrap items-center justify-between gap-3 border-b border-border bg-card/80 px-3 py-2">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-foreground">{title}</div>
+          {subtitle ? <div className="mt-0.5 truncate-path text-xs text-muted-foreground">{subtitle}</div> : null}
+        </div>
+        {badges ? <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{badges}</div> : null}
+      </div>
+      <div className={cn("bg-black", bodyClassName)}>{children}</div>
+      {footer ? (
+        <div className="border-t border-border bg-card/70 px-3 py-2 text-xs leading-5 text-muted-foreground">
+          {footer}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+export function VideoPreviewFrame({
+  src,
+  fileUrl,
+  placeholder = "暂无可预览视频",
+  muted = false,
+  className,
+}: {
+  src: string
+  fileUrl: (path: string) => string
+  placeholder?: string
+  muted?: boolean
+  className?: string
+}) {
+  const [mediaError, setMediaError] = useState(false)
+
+  useEffect(() => {
+    setMediaError(false)
+  }, [src])
+
+  return src ? (
+    <div className={cn("relative aspect-video w-full bg-black", className)}>
+      <video
+        key={src}
+        controls
+        muted={muted}
+        className="h-full w-full object-contain"
+        src={fileUrl(src)}
+        onError={() => setMediaError(true)}
+      />
+      {mediaError ? (
+        <div className="absolute inset-x-3 bottom-3 rounded-md border border-warning/30 bg-black/80 px-3 py-2 text-xs leading-5 text-warning">
+          当前浏览器无法解码这个视频。请用 Chrome/Edge 打开页面，或重新导出为浏览器支持的 H.264/AAC。
+        </div>
+      ) : null}
+    </div>
+  ) : (
+    <div className={cn("flex aspect-video items-center justify-center px-4 text-center text-sm text-zinc-400", className)}>
+      {placeholder}
+    </div>
+  )
 }

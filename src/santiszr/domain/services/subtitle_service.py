@@ -7,7 +7,7 @@ from santiszr.core.paths import ensure_module_dir, sanitize_filename
 from santiszr.domain.schemas.common import ErrorInfo
 from santiszr.domain.schemas.subtitle import SubtitleRequest, SubtitleResult, SubtitleSegment
 from santiszr.infra.media.ffmpeg import FFmpegAdapter
-from santiszr.infra.subtitle import ScriptSubtitleGenerator, SubtitleCorrector
+from santiszr.infra.subtitle import AssSubtitleRenderer, ScriptSubtitleGenerator, SubtitleCorrector
 
 
 class SubtitleService:
@@ -21,10 +21,12 @@ class SubtitleService:
         ffmpeg: FFmpegAdapter | None = None,
         generator: ScriptSubtitleGenerator | None = None,
         corrector: SubtitleCorrector | None = None,
+        ass_renderer: AssSubtitleRenderer | None = None,
     ) -> None:
         self.ffmpeg = ffmpeg or FFmpegAdapter()
         self.generator = generator or ScriptSubtitleGenerator()
         self.corrector = corrector or SubtitleCorrector()
+        self.ass_renderer = ass_renderer or AssSubtitleRenderer()
 
     def generate(self, request: SubtitleRequest) -> SubtitleResult:
         workspace = (
@@ -41,6 +43,7 @@ class SubtitleService:
             duration = self.ffmpeg.probe_duration(request.audio_path)
             base_name = sanitize_filename(request.output_name or Path(request.audio_path).stem, fallback="subtitle")
             srt_path = subtitle_dir / f"{base_name}.srt"
+            ass_path = subtitle_dir / f"{base_name}.ass"
 
             segments: list[SubtitleSegment]
             if self.generator.available():
@@ -80,20 +83,36 @@ class SubtitleService:
                 subtitle_text = srt_path.read_text(encoding="utf-8")
                 segments = self._parse_srt(subtitle_text)
 
+            frame_width: int | float | None = None
+            frame_height: int | float | None = None
+            if request.video_path:
+                video_meta = self.ffmpeg.probe_video_meta(request.video_path)
+                frame_width = video_meta.get("width")
+                frame_height = video_meta.get("height")
+            self.ass_renderer.write_ass(
+                segments,
+                ass_path,
+                style=request.style,
+                frame_width=frame_width,
+                frame_height=frame_height,
+            )
+            ass_text = ass_path.read_text(encoding="utf-8")
+            notes.append("Generated ASS subtitle with template and keyword highlight settings.")
+
             burned_video_path: Path | None = None
             if request.burn_in:
                 target_video = request.video_path
                 if target_video:
                     burned_video_path = self.ffmpeg.burn_subtitles(
                         target_video,
-                        srt_path,
+                        ass_path,
                         subtitle_dir / f"{base_name}_burned.mp4",
                         style=request.style,
                     )
                 else:
                     burned_video_path = self.ffmpeg.create_subtitle_video(
                         request.audio_path,
-                        srt_path,
+                        ass_path,
                         subtitle_dir / f"{base_name}_subtitle.mp4",
                         style=request.style,
                     )
@@ -101,8 +120,10 @@ class SubtitleService:
             return SubtitleResult(
                 success=True,
                 srt_path=str(srt_path),
+                ass_path=str(ass_path),
                 burned_video_path=str(burned_video_path) if burned_video_path else None,
                 subtitle_text=subtitle_text,
+                ass_text=ass_text,
                 segments=segments,
                 generated_by=generated_by,
                 corrected=corrected,

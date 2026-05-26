@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   Activity,
   FolderOpen,
@@ -9,6 +9,7 @@ import {
   Sparkles,
   Captions,
   MicVocal,
+  PictureInPicture2,
   Video,
   Send,
   Waypoints,
@@ -23,6 +24,7 @@ import { CopywritingSection } from "@/components/dashboard/CopywritingSection"
 import { AudioSection } from "@/components/dashboard/AudioSection"
 import { SubtitleSection } from "@/components/dashboard/SubtitleSection"
 import { AvatarSection } from "@/components/dashboard/AvatarSection"
+import { PictureInPictureSection } from "@/components/dashboard/PictureInPictureSection"
 import { PublishSection } from "@/components/dashboard/PublishSection"
 import { TasksSection } from "@/components/dashboard/TasksSection"
 import { SettingsSection } from "@/components/dashboard/SettingsSection"
@@ -36,16 +38,25 @@ const NAV_ITEMS = [
   { id: "copywriting", label: "文案 / 改写", icon: PenLine },
   { id: "audio", label: "音频", icon: MicVocal },
   { id: "avatar", label: "数字人", icon: Video },
+  { id: "pip", label: "画中画", icon: PictureInPicture2 },
   { id: "subtitle", label: "字幕", icon: Captions },
   { id: "publish", label: "发布", icon: Send },
   { id: "tasks", label: "任务中心", icon: Activity },
   { id: "settings", label: "设置 / 诊断", icon: Settings2 },
 ] as const
 
+type NavItemId = (typeof NAV_ITEMS)[number]["id"]
+
+function navIdFromHash(hash: string): NavItemId | null {
+  const id = hash.replace(/^#/, "")
+  return NAV_ITEMS.some((item) => item.id === id) ? (id as NavItemId) : null
+}
+
 const WORKFLOW_STEPS = [
   { id: "copywriting", label: "文案" },
   { id: "audio", label: "音频" },
   { id: "avatar", label: "数字人" },
+  { id: "pip", label: "画中画" },
   { id: "subtitle", label: "字幕" },
   { id: "publish", label: "发布" },
 ] as const
@@ -55,6 +66,7 @@ type WorkflowStepId = (typeof WORKFLOW_STEPS)[number]["id"]
 function workflowStepFromTask(kind?: string, stage?: string): WorkflowStepId {
   const text = `${kind ?? ""} ${stage ?? ""}`.toLowerCase()
   if (text.includes("publish") || text.includes("发布")) return "publish"
+  if (text.includes("pip") || text.includes("picture") || text.includes("画中画")) return "pip"
   if (text.includes("avatar") || text.includes("数字人") || text.includes("render")) return "avatar"
   if (text.includes("subtitle") || text.includes("字幕")) return "subtitle"
   if (text.includes("tts") || text.includes("audio") || text.includes("音频")) return "audio"
@@ -78,7 +90,7 @@ function WorkflowRail({
   return (
     <PanelShell
       eyebrow="工作流"
-      title="文案 -> 音频 -> 数字人 -> 字幕 -> 发布"
+      title="文案 -> 音频 -> 数字人 -> 画中画 -> 字幕 -> 发布"
       description="只要按顺序往下走，后续模块会直接复用上一步的产物。"
     >
       <div className="grid gap-4">
@@ -162,6 +174,27 @@ function taskVideoPath(task: TaskRecord | null) {
   return ""
 }
 
+function taskPostprocessRecord(task: TaskRecord | null) {
+  if (!task || task.task_kind !== "postprocess") return null
+  for (const candidate of [task.result, task.payload]) {
+    const record = recordFrom(candidate)
+    if (!record) continue
+    return recordFrom(record.postprocess) ?? record
+  }
+  return null
+}
+
+function taskPostprocessSteps(task: TaskRecord | null) {
+  const record = taskPostprocessRecord(task)
+  return Array.isArray(record?.steps_applied) ? record.steps_applied.map((item) => String(item)) : []
+}
+
+function taskPostprocessPath(task: TaskRecord | null, ...keys: string[]) {
+  const record = taskPostprocessRecord(task)
+  if (!record) return ""
+  return firstNonEmptyString(...keys.map((key) => record[key]))
+}
+
 function taskRewriteProvider(task: TaskRecord | null) {
   if (!task) return ""
   for (const candidate of [task.result, task.payload]) {
@@ -187,6 +220,10 @@ function assetModifiedAt(asset: AssetRecord) {
   return asset.modified_at ?? asset.updated_at ?? asset.created_at ?? ""
 }
 
+function compactRunId() {
+  return new Date().toISOString().replace(/\D/g, "").slice(4, 14)
+}
+
 const PUBLISH_PLATFORM_ORDER = ["douyin", "xiaohongshu", "wechat_channels"] as const
 
 function parsePublishTags(value: string) {
@@ -201,9 +238,34 @@ function parsePublishTags(value: string) {
   return tags
 }
 
+function parseSubtitleKeywords(value: string) {
+  const seen = new Set<string>()
+  const keywords: string[] = []
+  for (const item of value.split(/[\s,，,、]+/)) {
+    const keyword = item.trim()
+    if (!keyword || seen.has(keyword)) continue
+    seen.add(keyword)
+    keywords.push(keyword)
+    if (keywords.length >= 12) break
+  }
+  return keywords
+}
+
 function App() {
   const dashboard = useDashboard()
-  const [activeNav, setActiveNav] = useState<(typeof NAV_ITEMS)[number]["id"]>("workspace")
+  const [activeNav, setActiveNav] = useState<NavItemId>(() =>
+    typeof window === "undefined" ? "workspace" : navIdFromHash(window.location.hash) ?? "workspace",
+  )
+
+  useEffect(() => {
+    const syncActiveNavFromHash = () => {
+      const nextNav = navIdFromHash(window.location.hash)
+      if (nextNav) setActiveNav(nextNav)
+    }
+    syncActiveNavFromHash()
+    window.addEventListener("hashchange", syncActiveNavFromHash)
+    return () => window.removeEventListener("hashchange", syncActiveNavFromHash)
+  }, [])
 
   const currentStep = workflowStepFromTask(dashboard.currentTask?.task_kind, dashboard.currentTask?.stage)
   const llmStatus = dashboard.health?.llm
@@ -240,15 +302,47 @@ function App() {
     if (!avatarAssets.length) return ""
     return [...avatarAssets].sort((a, b) => assetModifiedAt(b).localeCompare(assetModifiedAt(a)))[0]?.path ?? ""
   }, [dashboard.assets.video])
-  const visibleAvatarVideoPath =
+  const latestPictureInPictureTask = useMemo(
+    () =>
+      dashboard.taskHistory.find((task) => {
+        const steps = taskPostprocessSteps(task)
+        return steps.includes("pip") || Boolean(taskPostprocessPath(task, "pip_video_path"))
+      }) ?? null,
+    [dashboard.taskHistory],
+  )
+  const latestSubtitlePostprocessTask = useMemo(
+    () =>
+      dashboard.taskHistory.find((task) => {
+        const steps = taskPostprocessSteps(task)
+        return steps.includes("subtitle") || Boolean(taskPostprocessPath(task, "subtitle_video_path"))
+      }) ?? null,
+    [dashboard.taskHistory],
+  )
+  const avatarGeneratedVideoPath =
     dashboard.avatar.resultVideoPath ||
     latestAvatarTaskVideoPath ||
-    latestAvatarAssetPath
-  const subtitleTargetVideoPath =
-    dashboard.avatar.baseVideoPath ||
-    latestAvatarTaskVideoPath ||
     latestAvatarAssetPath ||
-    dashboard.avatar.resultVideoPath
+    dashboard.avatar.baseVideoPath
+  const rawPictureInPictureResultVideoPath =
+    dashboard.pictureInPicture.resultVideoPath ||
+    taskPostprocessPath(latestPictureInPictureTask, "pip_video_path")
+  const pictureInPictureResultVideoPath = dashboard.pictureInPicture.enabled ? rawPictureInPictureResultVideoPath : ""
+  const rawSubtitleResultVideoPath =
+    dashboard.subtitle.resultVideoPath ||
+    taskPostprocessPath(latestSubtitlePostprocessTask, "subtitle_video_path", "final_video_path")
+  const subtitleResultVideoPath = dashboard.subtitle.burnIn ? rawSubtitleResultVideoPath : ""
+  const subtitleTargetVideoPath =
+    dashboard.pictureInPicture.enabled
+      ? pictureInPictureResultVideoPath
+      : avatarGeneratedVideoPath
+  const publishVideoPath =
+    subtitleResultVideoPath ||
+    pictureInPictureResultVideoPath ||
+    avatarGeneratedVideoPath
+  const pictureInPictureSourceAssets = useMemo(
+    () => dashboard.assets.pip,
+    [dashboard.assets.pip],
+  )
   const publishTitle = dashboard.publish.title || dashboard.copy.title
   const publishDescription = dashboard.publish.description || dashboard.copy.rewriteText || dashboard.copy.sourceText
   const publishTagsText = dashboard.publish.tags || dashboard.copy.tags
@@ -260,6 +354,13 @@ function App() {
     dashboard.copy.extractedText ||
     dashboard.copy.sourceText ||
     dashboard.copy.sourceInput
+  const subtitleStylePayload = useMemo(
+    () => ({
+      ...dashboard.subtitle.style,
+      highlight_keywords: parseSubtitleKeywords(dashboard.subtitle.style.highlight_keywords),
+    }),
+    [dashboard.subtitle.style],
+  )
   const selectedPublishPlatforms = PUBLISH_PLATFORM_ORDER.filter((platform) => dashboard.publish.platforms[platform])
   const sourceInputIsCurrentDirectory = sourceInput === "." || sourceInput === "./" || sourceInput === ".\\"
   const extractDisabledReason = !selectedWorkspace
@@ -278,16 +379,22 @@ function App() {
       : ""
   const subtitleDisabledReason = !selectedWorkspace
     ? "请先选择工作空间，再生成字幕。"
+    : !dashboard.subtitle.burnIn
+      ? "字幕未启用。"
     : !subtitleAudioPath.trim()
       ? "请先生成或选择音频，再生成字幕。"
       : ""
   const subtitleApplyDisabledReason = !selectedWorkspace
     ? "请先选择工作空间，再加载字幕到视频。"
+    : !dashboard.subtitle.burnIn
+      ? "字幕未启用。"
     : !dashboard.subtitle.generatedSrtPath.trim()
       ? "请先生成字幕，再加载到视频。"
-      : !subtitleTargetVideoPath.trim()
-        ? "请先生成数字人视频，再加载字幕。"
-        : ""
+      : dashboard.pictureInPicture.enabled && !pictureInPictureResultVideoPath.trim()
+        ? "画中画已开启，请先生成画中画视频，再加载字幕。"
+        : !subtitleTargetVideoPath.trim()
+          ? "请先生成数字人视频，再加载字幕。"
+          : ""
   const avatarDisabledReason = !selectedWorkspace
     ? "请先选择工作空间，再生成数字人。"
     : !avatarAudioPath.trim()
@@ -295,9 +402,20 @@ function App() {
       : !dashboard.avatar.referenceVideoPath.trim()
         ? "请先上传或选择参考视频。"
         : ""
+  const pictureInPictureDisabledReason = !selectedWorkspace
+    ? "请先选择工作空间，再生成画中画。"
+    : !dashboard.pictureInPicture.enabled
+      ? "打开画中画开关后再生成。"
+      : !avatarGeneratedVideoPath.trim()
+        ? "请先生成数字人视频，再添加画中画。"
+        : !dashboard.pictureInPicture.sourcePath.trim()
+          ? "请先上传或选择画中画素材。"
+          : !dashboard.pictureInPicture.fullDuration && dashboard.pictureInPicture.endSec <= dashboard.pictureInPicture.startSec
+            ? "结束秒数需要大于开始秒数。"
+            : ""
   const publishDisabledReason = !selectedWorkspace
     ? "请先选择工作空间，再发布。"
-    : !visibleAvatarVideoPath.trim()
+    : !publishVideoPath.trim()
       ? "请先生成可发布的视频。"
       : !publishTitle.trim()
         ? "请先填写发布标题。"
@@ -307,8 +425,9 @@ function App() {
             ? "请至少选择一个发布平台。"
             : ""
 
-  const openSection = (id: (typeof NAV_ITEMS)[number]["id"]) => {
+  const openSection = (id: NavItemId) => {
     setActiveNav(id)
+    window.history.replaceState(null, "", `#${id}`)
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" })
   }
 
@@ -338,12 +457,44 @@ function App() {
     })
   }
 
+  const handleGeneratePictureInPicture = () => {
+    if (pictureInPictureDisabledReason) return Promise.resolve(null)
+    const outputBase = pathBasename(avatarGeneratedVideoPath).replace(/\.[^.]+$/, "") || "picture-in-picture"
+    dashboard.pictureInPictureActions.setStatusNote(`正在生成画中画视频：${pathBasename(dashboard.pictureInPicture.sourcePath)}`)
+    return dashboard.submitTask("postprocess", {
+      video_path: avatarGeneratedVideoPath,
+      picture_in_picture: {
+        enabled: true,
+        source_path: dashboard.pictureInPicture.sourcePath,
+        start_sec: dashboard.pictureInPicture.fullDuration ? 0 : dashboard.pictureInPicture.startSec,
+        end_sec: dashboard.pictureInPicture.fullDuration ? null : dashboard.pictureInPicture.endSec,
+        template: dashboard.pictureInPicture.template,
+        position: dashboard.pictureInPicture.position,
+        scale: dashboard.pictureInPicture.scale,
+        border_width: dashboard.pictureInPicture.borderWidth,
+        border_color: dashboard.pictureInPicture.borderColor,
+        shadow: dashboard.pictureInPicture.shadow,
+        opacity: dashboard.pictureInPicture.opacity,
+        animation: dashboard.pictureInPicture.animation,
+        fade_duration: dashboard.pictureInPicture.fadeDuration,
+        loop: dashboard.pictureInPicture.loop,
+        mute: true,
+      },
+      burn_subtitles: false,
+      workspace: selectedWorkspace,
+      output_name: `${outputBase}_${compactRunId()}`,
+    }).catch((error) => {
+      dashboard.pictureInPictureActions.setStatusNote(error instanceof Error ? error.message : "画中画生成失败。")
+      throw error
+    })
+  }
+
   const handlePublish = () => {
     if (publishDisabledReason) return Promise.resolve(null)
     dashboard.publishActions.setStatusNote("正在本机打开平台发布页，并尝试填充视频、封面和文案。")
     return dashboard.submitTask("publish_materials", {
       platforms: selectedPublishPlatforms,
-      video_path: visibleAvatarVideoPath,
+      video_path: publishVideoPath,
       title: publishTitle.trim(),
       description: publishDescription.trim() || null,
       tags: publishTags,
@@ -355,10 +506,10 @@ function App() {
   }
 
   const handlePreparePublishMaterials = () => {
-    if (!selectedWorkspace || !visibleAvatarVideoPath.trim()) return Promise.resolve(null)
+    if (!selectedWorkspace || !publishVideoPath.trim()) return Promise.resolve(null)
     return dashboard.preparePublishMaterials({
       workspace: selectedWorkspace,
-      video_path: visibleAvatarVideoPath,
+      video_path: publishVideoPath,
       source_text: publishAiSourceText,
       title: "",
       description: "",
@@ -372,11 +523,11 @@ function App() {
   }
 
   const handleRenderPublishCover = () => {
-    if (!selectedWorkspace || !visibleAvatarVideoPath.trim()) return Promise.resolve(null)
+    if (!selectedWorkspace || !publishVideoPath.trim()) return Promise.resolve(null)
     return dashboard.preparePublishMaterials({
       ui_mode: "cover",
       workspace: selectedWorkspace,
-      video_path: visibleAvatarVideoPath,
+      video_path: publishVideoPath,
       source_text: publishAiSourceText,
       title: publishTitle,
       description: publishDescription,
@@ -657,21 +808,14 @@ function App() {
                 referenceVideoName={dashboard.avatar.referenceVideoName}
                 referenceVideoAssets={dashboard.assets.video.filter((asset) => asset.category === "reference_video" || asset.kind === "reference_video" || asset.source === "reference/video")}
                 engine={dashboard.avatar.engine}
-                resolution={dashboard.avatar.resolution}
-                fps={dashboard.avatar.fps}
-                overlayText={dashboard.avatar.overlayText}
-                resultVideoPath={visibleAvatarVideoPath}
+                resultVideoPath={avatarGeneratedVideoPath}
                 errorLog={dashboard.avatar.errorLog}
-                copyTitle={dashboard.copy.title}
                 busyGenerate={dashboard.isTaskBusy("avatar")}
                 latestTask={latestAvatarTask}
                 onAudioPathChange={dashboard.avatarActions.setAudioPath}
                 onReferenceVideoPathChange={dashboard.avatarActions.setReferenceVideoPath}
                 onReferenceVideoNameChange={dashboard.avatarActions.setReferenceVideoName}
                 onEngineChange={dashboard.avatarActions.setEngine}
-                onResolutionChange={dashboard.avatarActions.setResolution}
-                onFpsChange={dashboard.avatarActions.setFps}
-                onOverlayTextChange={dashboard.avatarActions.setOverlayText}
                 onResultVideoPathChange={dashboard.avatarActions.setResultVideoPath}
                 onErrorLogChange={dashboard.avatarActions.setErrorLog}
                 onUpload={(file) => dashboard.uploadAsset("video", file)}
@@ -681,14 +825,11 @@ function App() {
                     audio_path: avatarAudioPath,
                     model_id: "uploaded-avatar",
                     engine: dashboard.avatar.engine,
-                    resolution: dashboard.avatar.resolution,
-                    fps: dashboard.avatar.fps,
                     workspace: dashboard.workspace.current || dashboard.workspace.draft,
                     subtitle_path: null,
-                    subtitle_style: dashboard.subtitle.style,
+                    subtitle_style: subtitleStylePayload,
                     reference_video_path: dashboard.avatar.referenceVideoPath,
                     background_video_path: null,
-                    overlay_text: dashboard.avatar.overlayText.trim() || null,
                     batch_size: 4,
                     sync_offset: 0,
                     scale_h: 1.6,
@@ -702,17 +843,66 @@ function App() {
                 generateDisabledReason={avatarDisabledReason}
               />
 
+              <PictureInPictureSection
+                workspace={dashboard.workspace.current || dashboard.workspace.draft}
+                baseVideoPath={avatarGeneratedVideoPath}
+                enabled={dashboard.pictureInPicture.enabled}
+                sourcePath={dashboard.pictureInPicture.sourcePath}
+                sourceName={dashboard.pictureInPicture.sourceName}
+                sourceAssets={pictureInPictureSourceAssets}
+                fullDuration={dashboard.pictureInPicture.fullDuration}
+                startSec={dashboard.pictureInPicture.startSec}
+                endSec={dashboard.pictureInPicture.endSec}
+                template={dashboard.pictureInPicture.template}
+                position={dashboard.pictureInPicture.position}
+                scale={dashboard.pictureInPicture.scale}
+                borderWidth={dashboard.pictureInPicture.borderWidth}
+                borderColor={dashboard.pictureInPicture.borderColor}
+                shadow={dashboard.pictureInPicture.shadow}
+                opacity={dashboard.pictureInPicture.opacity}
+                animation={dashboard.pictureInPicture.animation}
+                fadeDuration={dashboard.pictureInPicture.fadeDuration}
+                loop={dashboard.pictureInPicture.loop}
+                resultVideoPath={pictureInPictureResultVideoPath}
+                statusNote={dashboard.pictureInPicture.statusNote}
+                busy={dashboard.isTaskBusy("postprocess")}
+                disabledReason={pictureInPictureDisabledReason}
+                onEnabledChange={dashboard.pictureInPictureActions.setEnabled}
+                onSourcePathChange={dashboard.pictureInPictureActions.setSourcePath}
+                onSourceNameChange={dashboard.pictureInPictureActions.setSourceName}
+                onFullDurationChange={dashboard.pictureInPictureActions.setFullDuration}
+                onStartSecChange={dashboard.pictureInPictureActions.setStartSec}
+                onEndSecChange={dashboard.pictureInPictureActions.setEndSec}
+                onTemplateChange={dashboard.pictureInPictureActions.setTemplate}
+                onPositionChange={dashboard.pictureInPictureActions.setPosition}
+                onScaleChange={dashboard.pictureInPictureActions.setScale}
+                onBorderWidthChange={dashboard.pictureInPictureActions.setBorderWidth}
+                onBorderColorChange={dashboard.pictureInPictureActions.setBorderColor}
+                onShadowChange={dashboard.pictureInPictureActions.setShadow}
+                onOpacityChange={dashboard.pictureInPictureActions.setOpacity}
+                onAnimationChange={dashboard.pictureInPictureActions.setAnimation}
+                onFadeDurationChange={dashboard.pictureInPictureActions.setFadeDuration}
+                onLoopChange={dashboard.pictureInPictureActions.setLoop}
+                onUpload={(kind, file) => dashboard.uploadAsset(kind === "video" ? "pip_video" : "pip_image", file)}
+                onGenerate={handleGeneratePictureInPicture}
+                fileUrl={dashboard.fileUrl}
+              />
+
               <SubtitleSection
                 workspace={dashboard.workspace.current || dashboard.workspace.draft}
                 audioPath={subtitleAudioPath}
                 videoPath={subtitleTargetVideoPath}
+                enabled={dashboard.subtitle.burnIn}
                 referenceText={subtitleReferenceText}
                 correctWithAI={dashboard.subtitle.correctWithAI && llmConfigured}
                 outputName={dashboard.subtitle.outputName}
                 style={dashboard.subtitle.style}
                 srtText={dashboard.subtitle.srtText}
                 generatedSrtPath={dashboard.subtitle.generatedSrtPath}
+                generatedAssPath={dashboard.subtitle.generatedAssPath}
+                resultVideoPath={subtitleResultVideoPath}
                 onAudioPathChange={dashboard.subtitleActions.setAudioPath}
+                onEnabledChange={dashboard.subtitleActions.setBurnIn}
                 onReferenceTextChange={dashboard.subtitleActions.setReferenceText}
                 onCorrectWithAIChange={dashboard.subtitleActions.setCorrectWithAI}
                 onOutputNameChange={dashboard.subtitleActions.setOutputName}
@@ -720,11 +910,12 @@ function App() {
                 onSrtTextChange={dashboard.subtitleActions.setSrtText}
                 onGenerate={() => {
                   if (subtitleDisabledReason) return Promise.resolve(null)
+                  dashboard.subtitleActions.clearResultVideo()
                   return dashboard.submitTask("subtitle", {
                     audio_path: subtitleAudioPath,
                     video_path: null,
                     reference_text: subtitleReferenceText,
-                    style: dashboard.subtitle.style,
+                    style: subtitleStylePayload,
                     burn_in: false,
                     workspace: dashboard.workspace.current || dashboard.workspace.draft,
                     output_name: dashboard.subtitle.outputName,
@@ -737,13 +928,14 @@ function App() {
                   if (dashboard.subtitle.srtText.trim()) {
                     await dashboard.writeTextFile(dashboard.subtitle.generatedSrtPath, dashboard.subtitle.srtText)
                   }
+                  const subtitleOutputBase = dashboard.subtitle.outputName.trim() || "subtitle"
                   return dashboard.submitTask("postprocess", {
                     video_path: subtitleTargetVideoPath,
                     subtitle_path: dashboard.subtitle.generatedSrtPath,
-                    subtitle_style: dashboard.subtitle.style,
+                    subtitle_style: subtitleStylePayload,
                     burn_subtitles: true,
                     workspace: dashboard.workspace.current || dashboard.workspace.draft,
-                    output_name: dashboard.subtitle.outputName,
+                    output_name: `${subtitleOutputBase}-${compactRunId()}`,
                   })
                 }}
                 busyGenerate={dashboard.isTaskBusy("subtitle")}
@@ -751,6 +943,7 @@ function App() {
                 generateDisabledReason={subtitleDisabledReason}
                 applyDisabledReason={subtitleApplyDisabledReason}
                 llmStatus={llmStatus}
+                fileUrl={dashboard.fileUrl}
               />
 
               <PublishSection
@@ -765,8 +958,7 @@ function App() {
                 tags={publishTagsText}
                 platforms={dashboard.publish.platforms}
                 statusNote={dashboard.publish.statusNote}
-                assetImages={dashboard.assets.image}
-                videoPath={visibleAvatarVideoPath}
+                videoPath={publishVideoPath}
                 fileUrl={dashboard.fileUrl}
                 busy={dashboard.isTaskBusy("publish_materials")}
                 disabledReason={publishDisabledReason}

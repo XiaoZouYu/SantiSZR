@@ -59,6 +59,9 @@ type SubtitleStyleSlice = {
   color: string
   outline_color: string
   bottom_margin: number
+  template: string
+  highlight_keywords: string
+  highlight_color: string
 }
 
 type SubtitleSlice = {
@@ -71,6 +74,8 @@ type SubtitleSlice = {
   style: SubtitleStyleSlice
   srtText: string
   generatedSrtPath: string
+  generatedAssPath: string
+  resultVideoPath: string
 }
 
 type AvatarSlice = {
@@ -79,11 +84,29 @@ type AvatarSlice = {
   referenceVideoName: string
   baseVideoPath: string
   engine: string
-  resolution: string
-  fps: number
-  overlayText: string
   resultVideoPath: string
   errorLog: string[]
+}
+
+type PictureInPictureSlice = {
+  enabled: boolean
+  sourcePath: string
+  sourceName: string
+  fullDuration: boolean
+  startSec: number
+  endSec: number
+  template: string
+  position: string
+  scale: number
+  borderWidth: number
+  borderColor: string
+  shadow: boolean
+  opacity: number
+  animation: string
+  fadeDuration: number
+  loop: boolean
+  resultVideoPath: string
+  statusNote: string
 }
 
 type PublishSlice = {
@@ -120,6 +143,9 @@ const DEFAULT_SUBTITLE_STYLE: SubtitleStyleSlice = {
   color: "#FFFFFF",
   outline_color: "#000000",
   bottom_margin: 72,
+  template: "short_video",
+  highlight_keywords: "",
+  highlight_color: "#FF3B30",
 }
 
 const DEFAULT_PLATFORMS = {
@@ -158,6 +184,7 @@ function createEmptyBuckets(): AssetBuckets {
     audio: [],
     video: [],
     image: [],
+    pip: [],
     subtitle: [],
     other: [],
   }
@@ -254,7 +281,15 @@ function isSubtitlePath(path: string) {
 
 function detectAssetBucket(asset: AssetRecord) {
   const kind = `${asset.kind ?? ""}`.toLowerCase()
+  const category = `${asset.category ?? ""}`.toLowerCase()
+  const source = `${asset.source ?? ""}`.toLowerCase()
   const path = `${asset.path ?? asset.url ?? ""}`.toLowerCase()
+  if (
+    kind.includes("pip") ||
+    category.includes("pip") ||
+    source.startsWith("pip/") ||
+    /[\\/]pip[\\/]/i.test(path)
+  ) return "pip"
   if (kind.includes("audio") || isAudioPath(path)) return "audio"
   if (kind.includes("video") || isVideoPath(path)) return "video"
   if (kind.includes("image") || isImagePath(path)) return "image"
@@ -636,6 +671,15 @@ function latestPublishTaskPayload(tasks: TaskRecord[]) {
   return null
 }
 
+function latestCompletedTaskPayload(tasks: TaskRecord[], kind: string) {
+  const task = tasks.find((item) => item.task_kind === kind && !isActiveTaskStatus(item.status))
+  if (!task) return null
+  const result = asRecord(task.result)
+  if (result) return result
+  const payload = asRecord(task.payload)
+  return payload
+}
+
 function applyTaskPayload(
   kind: TaskKind | string,
   payload: unknown,
@@ -644,6 +688,7 @@ function applyTaskPayload(
     setAudio: React.Dispatch<React.SetStateAction<AudioSlice>>
     setSubtitle: React.Dispatch<React.SetStateAction<SubtitleSlice>>
     setAvatar: React.Dispatch<React.SetStateAction<AvatarSlice>>
+    setPictureInPicture: React.Dispatch<React.SetStateAction<PictureInPictureSlice>>
     setPublish: React.Dispatch<React.SetStateAction<PublishSlice>>
   },
 ) {
@@ -709,10 +754,8 @@ function applyTaskPayload(
       ...prev,
       srtText: firstString(record.subtitle_text, prev.srtText),
       generatedSrtPath: firstString(record.srt_path, prev.generatedSrtPath),
-    }))
-    setters.setAvatar((prev) => ({
-      ...prev,
-      resultVideoPath: firstString(record.burned_video_path, prev.resultVideoPath),
+      generatedAssPath: firstString(record.ass_path, prev.generatedAssPath),
+      resultVideoPath: firstString(record.burned_video_path),
     }))
   }
 
@@ -727,10 +770,24 @@ function applyTaskPayload(
   }
 
   if (kind === "postprocess") {
-    setters.setAvatar((prev) => ({
-      ...prev,
-      resultVideoPath: firstString(record.final_video_path, record.subtitle_video_path, prev.resultVideoPath),
-    }))
+    const steps = Array.isArray(record.steps_applied) ? record.steps_applied.map((item) => String(item)) : []
+    if (steps.includes("pip") || record.pip_video_path) {
+      setters.setPictureInPicture((prev) => ({
+        ...prev,
+        enabled: true,
+        resultVideoPath: firstString(record.pip_video_path, record.final_video_path, prev.resultVideoPath),
+        sourcePath: firstString(record.pip_source_path, prev.sourcePath),
+        statusNote: firstString(record.final_video_path)
+          ? `画中画视频已生成：${firstString(record.final_video_path)}`
+          : "画中画后处理已完成。",
+      }))
+    }
+    if (steps.includes("subtitle") || record.subtitle_video_path) {
+      setters.setSubtitle((prev) => ({
+        ...prev,
+        resultVideoPath: firstString(record.subtitle_video_path, record.final_video_path, prev.resultVideoPath),
+      }))
+    }
     setters.setPublish((prev) => ({
       ...prev,
       coverPath: firstString(record.cover_image_path, prev.coverPath),
@@ -755,10 +812,19 @@ function applyTaskPayload(
     if (artifacts.postprocess) {
       const postprocess = asRecord(artifacts.postprocess)
       if (postprocess) {
-        setters.setAvatar((prev) => ({
+        const steps = Array.isArray(postprocess.steps_applied) ? postprocess.steps_applied.map((item) => String(item)) : []
+        setters.setPictureInPicture((prev) => ({
           ...prev,
-          resultVideoPath: firstString(postprocess.final_video_path, prev.resultVideoPath),
+          enabled: true,
+          resultVideoPath: firstString(postprocess.pip_video_path, prev.resultVideoPath),
+          sourcePath: firstString(postprocess.pip_source_path, prev.sourcePath),
         }))
+        if (steps.includes("subtitle") || postprocess.subtitle_video_path) {
+          setters.setSubtitle((prev) => ({
+            ...prev,
+            resultVideoPath: firstString(postprocess.subtitle_video_path, postprocess.final_video_path, prev.resultVideoPath),
+          }))
+        }
         setters.setPublish((prev) => ({
           ...prev,
           coverPath: firstString(postprocess.cover_image_path, prev.coverPath),
@@ -823,6 +889,8 @@ export function useDashboard() {
     style: DEFAULT_SUBTITLE_STYLE,
     srtText: "",
     generatedSrtPath: "",
+    generatedAssPath: "",
+    resultVideoPath: "",
   })
   const [avatar, setAvatar] = useState<AvatarSlice>({
     audioPath: "",
@@ -830,11 +898,28 @@ export function useDashboard() {
     referenceVideoName: "",
     baseVideoPath: "",
     engine: "tuilionnx",
-    resolution: "1080p",
-    fps: 25,
-    overlayText: "",
     resultVideoPath: "",
     errorLog: [],
+  })
+  const [pictureInPicture, setPictureInPicture] = useState<PictureInPictureSlice>({
+    enabled: false,
+    sourcePath: "",
+    sourceName: "",
+    fullDuration: true,
+    startSec: 0,
+    endSec: 8,
+    template: "corner",
+    position: "top_right",
+    scale: 0.18,
+    borderWidth: 0,
+    borderColor: "#FFFFFF",
+    shadow: false,
+    opacity: 1,
+    animation: "none",
+    fadeDuration: 0.35,
+    loop: true,
+    resultVideoPath: "",
+    statusNote: "未启用画中画。",
   })
   const [publish, setPublish] = useState<PublishSlice>({
     coverPath: "",
@@ -912,6 +997,7 @@ export function useDashboard() {
 
   const ingestStateSnapshot = useCallback((snapshot: BackendStateResponse) => {
     setStateSnapshot(snapshot)
+    const artifacts = asRecord(snapshot.artifacts)
     const currentWorkspace = firstString(snapshot.workspace, snapshot.current_workspace, snapshot.last_workspace, snapshot.path, workspace.current)
     const recent = normalizeRecentWorkspaces(snapshot.recent_workspaces)
 
@@ -959,12 +1045,14 @@ export function useDashboard() {
     setSubtitle((prev) => ({
       ...prev,
       srtText: firstString(snapshot.subtitle_text, prev.srtText),
-      generatedSrtPath: firstString(snapshot.subtitle_path, prev.generatedSrtPath),
+      generatedSrtPath: firstString(snapshot.subtitle_path, artifacts?.subtitle, prev.generatedSrtPath),
+      generatedAssPath: prev.generatedAssPath,
+      resultVideoPath: firstString(snapshot.burned_video_path, snapshot.subtitle_video_path, prev.resultVideoPath),
     }))
     setAvatar((prev) => ({
       ...prev,
-      baseVideoPath: firstString(snapshot.avatar_video_path, prev.baseVideoPath),
-      resultVideoPath: firstString(snapshot.avatar_video_path, prev.resultVideoPath),
+      baseVideoPath: firstString(snapshot.avatar_video_path, artifacts?.avatar_video, prev.baseVideoPath),
+      resultVideoPath: firstString(snapshot.avatar_video_path, artifacts?.avatar_video, prev.resultVideoPath),
     }))
     setPublish((prev) => ({
       ...prev,
@@ -1067,6 +1155,18 @@ export function useDashboard() {
           setAudio,
           setSubtitle,
           setAvatar,
+          setPictureInPicture,
+          setPublish,
+        })
+      }
+      const postprocessPayload = latestCompletedTaskPayload(tasks, "postprocess")
+      if (postprocessPayload) {
+        applyTaskPayload("postprocess", postprocessPayload, {
+          setCopy,
+          setAudio,
+          setSubtitle,
+          setAvatar,
+          setPictureInPicture,
           setPublish,
         })
       }
@@ -1172,6 +1272,7 @@ export function useDashboard() {
           setAudio,
           setSubtitle,
           setAvatar,
+          setPictureInPicture,
           setPublish,
         })
       }
@@ -1218,11 +1319,18 @@ export function useDashboard() {
         const assetsResponse = normalizeAssetBuckets(response)
         const normalizedKind = kind.trim().toLowerCase()
         const shouldMergeIntoList = normalizedKind !== "audio" && normalizedKind !== "video"
-        if (shouldMergeIntoList && (assetsResponse.audio.length || assetsResponse.video.length || assetsResponse.image.length || assetsResponse.subtitle.length)) {
+        if (shouldMergeIntoList && (
+          assetsResponse.audio.length ||
+          assetsResponse.video.length ||
+          assetsResponse.image.length ||
+          assetsResponse.pip.length ||
+          assetsResponse.subtitle.length
+        )) {
           setAssets((prev) => ({
             audio: mergeAssetLists(prev.audio, assetsResponse.audio),
             video: mergeAssetLists(prev.video, assetsResponse.video),
             image: mergeAssetLists(prev.image, assetsResponse.image),
+            pip: mergeAssetLists(prev.pip, assetsResponse.pip),
             subtitle: mergeAssetLists(prev.subtitle, assetsResponse.subtitle),
             other: mergeAssetLists(prev.other, assetsResponse.other),
           }))
@@ -1344,12 +1452,17 @@ export function useDashboard() {
           if (prev.generatedAudioPath === path) next.generatedAudioPath = ""
           return next
         })
-        setSubtitle((prev) =>
-          prev.audioPath === path
-            ? { ...prev, audioPath: "", referenceText: "", referenceTextSourceAudioPath: "" }
-            : prev,
-        )
+        setSubtitle((prev) => ({
+          ...prev,
+          ...(prev.audioPath === path ? { audioPath: "", referenceText: "", referenceTextSourceAudioPath: "" } : {}),
+          ...(prev.resultVideoPath === path ? { resultVideoPath: "" } : {}),
+        }))
         setAvatar((prev) => (prev.audioPath === path ? { ...prev, audioPath: "" } : prev))
+        setPictureInPicture((prev) => {
+          if (prev.sourcePath === path) return { ...prev, sourcePath: "", sourceName: "", resultVideoPath: "" }
+          if (prev.resultVideoPath === path) return { ...prev, resultVideoPath: "" }
+          return prev
+        })
         await Promise.allSettled([refreshAssets(), refreshState()])
         return true
       } catch (error) {
@@ -1535,6 +1648,7 @@ export function useDashboard() {
             setAudio,
             setSubtitle,
             setAvatar,
+            setPictureInPicture,
             setPublish,
           })
         }
@@ -1614,8 +1728,20 @@ export function useDashboard() {
     setCorrectWithAI: (value: boolean) => setSubtitle((prev) => ({ ...prev, correctWithAI: value })),
     setOutputName: (value: string) => setSubtitle((prev) => ({ ...prev, outputName: value })),
     setStyle: (key: keyof SubtitleStyleSlice, value: string | number) =>
-      setSubtitle((prev) => ({ ...prev, style: { ...prev.style, [key]: value } })),
-    setSrtText: (value: string) => setSubtitle((prev) => ({ ...prev, srtText: value })),
+      setSubtitle((prev) => ({
+        ...prev,
+        style: { ...prev.style, [key]: value },
+        generatedAssPath: "",
+        resultVideoPath: "",
+      })),
+    setSrtText: (value: string) =>
+      setSubtitle((prev) => ({
+        ...prev,
+        srtText: value,
+        generatedAssPath: "",
+        resultVideoPath: "",
+      })),
+    clearResultVideo: () => setSubtitle((prev) => ({ ...prev, resultVideoPath: "" })),
   }
 
   const avatarActions = {
@@ -1623,11 +1749,118 @@ export function useDashboard() {
     setReferenceVideoPath: (value: string) => setAvatar((prev) => ({ ...prev, referenceVideoPath: value })),
     setReferenceVideoName: (value: string) => setAvatar((prev) => ({ ...prev, referenceVideoName: value })),
     setEngine: (value: string) => setAvatar((prev) => ({ ...prev, engine: value })),
-    setResolution: (value: string) => setAvatar((prev) => ({ ...prev, resolution: value })),
-    setFps: (value: number) => setAvatar((prev) => ({ ...prev, fps: value })),
-    setOverlayText: (value: string) => setAvatar((prev) => ({ ...prev, overlayText: value })),
     setResultVideoPath: (value: string) => setAvatar((prev) => ({ ...prev, resultVideoPath: value })),
     setErrorLog: (value: string[]) => setAvatar((prev) => ({ ...prev, errorLog: value })),
+  }
+
+  const pictureInPictureActions = {
+    setEnabled: (value: boolean) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        enabled: value,
+        statusNote: value ? "已启用画中画，选择素材后可生成。" : "未启用画中画。",
+      })),
+    setSourcePath: (value: string) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        sourcePath: value,
+        resultVideoPath: value === prev.sourcePath ? prev.resultVideoPath : "",
+        statusNote: value === prev.sourcePath ? prev.statusNote : "画中画素材已修改，请重新生成后查看新结果。",
+      })),
+    setSourceName: (value: string) => setPictureInPicture((prev) => ({ ...prev, sourceName: value })),
+    setFullDuration: (value: boolean) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        fullDuration: value,
+        resultVideoPath: value === prev.fullDuration ? prev.resultVideoPath : "",
+        statusNote: value === prev.fullDuration ? prev.statusNote : "画中画显示时间已修改，请重新生成后查看新结果。",
+      })),
+    setStartSec: (value: number) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        startSec: value,
+        resultVideoPath: value === prev.startSec ? prev.resultVideoPath : "",
+        statusNote: value === prev.startSec ? prev.statusNote : "画中画显示时间已修改，请重新生成后查看新结果。",
+      })),
+    setEndSec: (value: number) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        endSec: value,
+        resultVideoPath: value === prev.endSec ? prev.resultVideoPath : "",
+        statusNote: value === prev.endSec ? prev.statusNote : "画中画显示时间已修改，请重新生成后查看新结果。",
+      })),
+    setTemplate: (value: string) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        template: value,
+        resultVideoPath: value === prev.template ? prev.resultVideoPath : "",
+        statusNote: value === prev.template ? prev.statusNote : "画中画模板已修改，请重新生成后查看新结果。",
+      })),
+    setPosition: (value: string) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        position: value,
+        resultVideoPath: value === prev.position ? prev.resultVideoPath : "",
+        statusNote: value === prev.position ? prev.statusNote : "画中画位置已修改，请重新生成后查看新结果。",
+      })),
+    setScale: (value: number) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        scale: value,
+        resultVideoPath: value === prev.scale ? prev.resultVideoPath : "",
+        statusNote: value === prev.scale ? prev.statusNote : "画中画显示大小已修改，请重新生成后查看新结果。",
+      })),
+    setBorderWidth: (value: number) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        borderWidth: value,
+        resultVideoPath: value === prev.borderWidth ? prev.resultVideoPath : "",
+        statusNote: value === prev.borderWidth ? prev.statusNote : "画中画边框已修改，请重新生成后查看新结果。",
+      })),
+    setBorderColor: (value: string) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        borderColor: value,
+        resultVideoPath: value === prev.borderColor ? prev.resultVideoPath : "",
+        statusNote: value === prev.borderColor ? prev.statusNote : "画中画边框颜色已修改，请重新生成后查看新结果。",
+      })),
+    setShadow: (value: boolean) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        shadow: value,
+        resultVideoPath: value === prev.shadow ? prev.resultVideoPath : "",
+        statusNote: value === prev.shadow ? prev.statusNote : "画中画阴影已修改，请重新生成后查看新结果。",
+      })),
+    setOpacity: (value: number) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        opacity: value,
+        resultVideoPath: value === prev.opacity ? prev.resultVideoPath : "",
+        statusNote: value === prev.opacity ? prev.statusNote : "画中画透明度已修改，请重新生成后查看新结果。",
+      })),
+    setAnimation: (value: string) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        animation: value,
+        resultVideoPath: value === prev.animation ? prev.resultVideoPath : "",
+        statusNote: value === prev.animation ? prev.statusNote : "画中画动画已修改，请重新生成后查看新结果。",
+      })),
+    setFadeDuration: (value: number) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        fadeDuration: value,
+        resultVideoPath: value === prev.fadeDuration ? prev.resultVideoPath : "",
+        statusNote: value === prev.fadeDuration ? prev.statusNote : "画中画动画时长已修改，请重新生成后查看新结果。",
+      })),
+    setLoop: (value: boolean) =>
+      setPictureInPicture((prev) => ({
+        ...prev,
+        loop: value,
+        resultVideoPath: value === prev.loop ? prev.resultVideoPath : "",
+        statusNote: value === prev.loop ? prev.statusNote : "画中画循环设置已修改，请重新生成后查看新结果。",
+      })),
+    setResultVideoPath: (value: string) => setPictureInPicture((prev) => ({ ...prev, resultVideoPath: value })),
+    setStatusNote: (value: string) => setPictureInPicture((prev) => ({ ...prev, statusNote: value })),
   }
 
   const publishActions = {
@@ -1675,6 +1908,8 @@ export function useDashboard() {
     subtitleActions,
     avatar,
     avatarActions,
+    pictureInPicture,
+    pictureInPictureActions,
     publish,
     publishActions,
     settings,

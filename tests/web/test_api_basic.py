@@ -271,6 +271,36 @@ def test_upload_reference_audio_is_listed_from_current_workspace(tmp_path: Path)
     assert reference_assets[0]["source"] == "reference/audio"
 
 
+def test_upload_picture_in_picture_asset_uses_dedicated_workspace_library(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    workspace = tmp_path / "selected-workspace"
+
+    select_response = client.post("/api/workspaces/select", json={"path": str(workspace)})
+    assert select_response.status_code == 200
+
+    image_response = client.post(
+        "/api/assets/upload",
+        data={"kind": "pip_image", "workspace": str(workspace)},
+        files={"file": ("overlay.png", b"fake image bytes", "image/png")},
+    )
+    video_response = client.post(
+        "/api/assets/upload",
+        data={"kind": "pip_video", "workspace": str(workspace)},
+        files={"file": ("clip.mp4", b"fake video bytes", "video/mp4")},
+    )
+
+    assert image_response.status_code == 200
+    assert video_response.status_code == 200
+    assert Path(image_response.json()["path"]).parent == workspace.resolve() / "pip" / "image"
+    assert Path(video_response.json()["path"]).parent == workspace.resolve() / "pip" / "video"
+
+    assets_response = client.get("/api/assets")
+    assert assets_response.status_code == 200
+    pip_assets = [asset for asset in assets_response.json()["assets"] if asset["category"] == "pip_asset"]
+    assert {asset["source"] for asset in pip_assets} == {"pip/image", "pip/video"}
+    assert {asset["name"] for asset in pip_assets} == {"overlay", "clip"}
+
+
 def test_reference_audio_transcript_uses_memory_cache(tmp_path: Path) -> None:
     client = _client(tmp_path)
     context = _context_from_client(client)

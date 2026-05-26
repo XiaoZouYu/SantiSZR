@@ -44,6 +44,7 @@ class BrowserPublishAssistant:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._playwright = None
+        self._browser = None
         self._context = None
 
     def publish(
@@ -147,14 +148,7 @@ class BrowserPublishAssistant:
             "viewport": {"width": 1440, "height": 1000},
             "accept_downloads": True,
         }
-        try:
-            self._context = chromium.launch_persistent_context(
-                str(user_data_dir),
-                channel="chrome",
-                **launch_kwargs,
-            )
-        except Exception:
-            self._context = chromium.launch_persistent_context(str(user_data_dir), **launch_kwargs)
+        self._context = chromium.launch_persistent_context(str(user_data_dir), **launch_kwargs)
         return self._context
 
     def _connect_existing_chrome(self, chromium):
@@ -166,12 +160,14 @@ class BrowserPublishAssistant:
             browser = chromium.connect_over_cdp("http://127.0.0.1:9222", timeout=2500)
         except Exception:
             return None
+        self._browser = browser
         if browser.contexts:
             return browser.contexts[0]
         return browser.new_context(viewport={"width": 1440, "height": 1000}, accept_downloads=True)
 
     def _reset_context(self) -> None:
         self._context = None
+        self._browser = None
         if self._playwright is not None:
             try:
                 self._playwright.stop()

@@ -1,12 +1,10 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Smartphone, Upload, Video } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
-import { PanelShell, TokenBadge } from "./common"
+import { PanelShell, TokenBadge, VideoPreviewPanel } from "./common"
 import { assetPathFromUploadResponse, pathBasename } from "@/lib/utils"
 import type { AssetRecord, TaskRecord } from "@/types"
 
@@ -17,21 +15,14 @@ type Props = {
   referenceVideoName: string
   referenceVideoAssets: AssetRecord[]
   engine: string
-  resolution: string
-  fps: number
-  overlayText: string
   resultVideoPath: string
   errorLog: string[]
-  copyTitle: string
   busyGenerate: boolean
   latestTask: TaskRecord | null
   onAudioPathChange: (value: string) => void
   onReferenceVideoPathChange: (value: string) => void
   onReferenceVideoNameChange: (value: string) => void
   onEngineChange: (value: string) => void
-  onResolutionChange: (value: string) => void
-  onFpsChange: (value: number) => void
-  onOverlayTextChange: (value: string) => void
   onResultVideoPathChange: (value: string) => void
   onErrorLogChange: (value: string[]) => void
   onUpload: (file: File) => Promise<unknown>
@@ -43,6 +34,7 @@ type Props = {
 export function AvatarSection(props: Props) {
   const uploadRef = useRef<HTMLInputElement | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [mediaError, setMediaError] = useState(false)
 
   const handleUpload = async (file?: File | null) => {
     if (!file) return
@@ -71,6 +63,11 @@ export function AvatarSection(props: Props) {
     props.resultVideoPath ||
     (latestTaskStatus === "succeeded" && typeof latestAvatarResult?.video_path === "string" ? latestAvatarResult.video_path : "")
   const previewPath = latestResultPath || props.referenceVideoPath
+
+  useEffect(() => {
+    setMediaError(false)
+  }, [previewPath])
+
   const statusTone =
     latestTaskStatus === "succeeded"
       ? "success"
@@ -173,7 +170,7 @@ export function AvatarSection(props: Props) {
               <p>{statusMessage}</p>
               {latestResultPath ? <p className="truncate-path text-xs">位置: {latestResultPath}</p> : null}
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3">
               <div className="grid gap-2">
                 <Label>引擎</Label>
                 <Select value={props.engine} onValueChange={props.onEngineChange}>
@@ -185,35 +182,6 @@ export function AvatarSection(props: Props) {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-2">
-                <Label>分辨率</Label>
-                <Select value={props.resolution} onValueChange={props.onResolutionChange}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="720p">720p</SelectItem>
-                    <SelectItem value="1080p">1080p</SelectItem>
-                    <SelectItem value="1440p">1440p</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-2">
-                <Label>帧率</Label>
-                <Input type="number" min={15} max={60} value={props.fps} onChange={(event) => props.onFpsChange(Number(event.target.value))} />
-              </div>
-            </div>
-            <div className="grid gap-2">
-              <Label>视频叠加文字（可选）</Label>
-              <Textarea
-                value={props.overlayText}
-                onChange={(event) => props.onOverlayTextChange(event.target.value)}
-                placeholder={props.copyTitle || "留空则不在视频上叠加文字"}
-                className="min-h-[94px]"
-              />
-              <p className="text-xs text-muted-foreground">只有这里手动填写内容时，才会把文字压到视频画面上。</p>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <Badge variant="outline">音频: {pathBasename(props.audioPath || "未选择")}</Badge>
@@ -230,17 +198,36 @@ export function AvatarSection(props: Props) {
         </div>
 
         <div className="grid content-start gap-4">
-          <div className="grid gap-2">
-            <div className="flex items-center justify-between">
-              <Label>视频预览</Label>
-              {latestResultPath ? <Badge variant="secondary">{pathBasename(latestResultPath)}</Badge> : null}
-            </div>
+          <VideoPreviewPanel
+            title="数字人视频预览"
+            subtitle={latestResultPath || props.referenceVideoPath || "等待生成数字人视频"}
+            badges={
+              <>
+                <TokenBadge tone={statusTone}>{statusLabel}</TokenBadge>
+                {latestResultPath ? <Badge variant="secondary">{pathBasename(latestResultPath)}</Badge> : null}
+              </>
+            }
+            bodyClassName="bg-transparent"
+          >
             <div className="phone-preview-wrap">
               <div className="phone-preview-device" aria-label="手机竖屏视频预览">
                 <div className="phone-preview-speaker" />
-                <div className="phone-preview-screen">
+                <div className="phone-preview-screen relative">
                   {previewPath ? (
-                    <video key={previewPath} controls className="h-full w-full bg-black object-contain" src={props.fileUrl(previewPath)} />
+                    <>
+                      <video
+                        key={previewPath}
+                        controls
+                        className="h-full w-full bg-black object-contain"
+                        src={props.fileUrl(previewPath)}
+                        onError={() => setMediaError(true)}
+                      />
+                      {mediaError ? (
+                        <div className="absolute inset-x-3 bottom-3 rounded-md border border-warning/30 bg-black/80 px-3 py-2 text-xs leading-5 text-warning">
+                          当前浏览器无法解码这个视频。请用 Chrome/Edge 打开页面，或重新导出为浏览器支持的 H.264/AAC。
+                        </div>
+                      ) : null}
+                    </>
                   ) : (
                     <div className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center text-sm text-zinc-400">
                       <Smartphone className="h-9 w-9 text-zinc-500" />
@@ -251,7 +238,7 @@ export function AvatarSection(props: Props) {
                 <div className="phone-preview-home" />
               </div>
             </div>
-          </div>
+          </VideoPreviewPanel>
         </div>
       </div>
       <div className="mt-4 text-xs text-muted-foreground">

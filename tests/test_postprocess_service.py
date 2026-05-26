@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from santiszr.domain.schemas.postprocess import BGMSelection, CoverRequest, CoverStyle, PostProcessRequest
+from santiszr.domain.schemas.postprocess import (
+    BGMSelection,
+    CoverRequest,
+    CoverStyle,
+    PictureInPictureRequest,
+    PostProcessRequest,
+)
 from santiszr.domain.schemas.subtitle import SubtitleStyle
 from santiszr.domain.services.postprocess_service import PostProcessService
 
@@ -27,6 +33,52 @@ class FakeFFmpegAdapter:
                     "subtitle_path": str(subtitle_path),
                     "output_path": str(target),
                     "style": style,
+                },
+            )
+        )
+        return target
+
+    def overlay_picture_in_picture(
+        self,
+        video_path: str | Path,
+        source_path: str | Path,
+        output_path: str | Path,
+        *,
+        start_sec: float = 0.0,
+        end_sec: float | None = None,
+        position: str = "top_right",
+        scale: float = 0.28,
+        border_width: int = 0,
+        border_color: str = "#FFFFFF",
+        shadow: bool = False,
+        opacity: float = 1.0,
+        animation: str = "none",
+        fade_duration: float = 0.35,
+        loop: bool = True,
+        mute: bool = True,
+    ) -> Path:
+        target = Path(output_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"pip-video")
+        self.calls.append(
+            (
+                "pip",
+                {
+                    "video_path": str(video_path),
+                    "source_path": str(source_path),
+                    "output_path": str(target),
+                    "start_sec": start_sec,
+                    "end_sec": end_sec,
+                    "position": position,
+                    "scale": scale,
+                    "border_width": border_width,
+                    "border_color": border_color,
+                    "shadow": shadow,
+                    "opacity": opacity,
+                    "animation": animation,
+                    "fade_duration": fade_duration,
+                    "loop": loop,
+                    "mute": mute,
                 },
             )
         )
@@ -144,6 +196,60 @@ def test_postprocess_service_runs_subtitle_bgm_and_cover_in_order(temp_workspace
     assert ffmpeg.calls[1][1]["bgm_volume"] == 0.35
     assert ffmpeg.calls[2][1]["timestamp_sec"] == 4.0
     assert any("random BGM" in note for note in result.notes)
+
+
+def test_postprocess_service_runs_picture_in_picture_before_subtitles(temp_workspace: Path) -> None:
+    ffmpeg = FakeFFmpegAdapter()
+    service = PostProcessService(ffmpeg=ffmpeg)
+
+    video_path = temp_workspace / "avatar" / "result.mp4"
+    pip_path = temp_workspace / "uploads" / "image" / "chart.png"
+    subtitle_path = temp_workspace / "subtitle" / "result.srt"
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    pip_path.parent.mkdir(parents=True, exist_ok=True)
+    subtitle_path.parent.mkdir(parents=True, exist_ok=True)
+    video_path.write_bytes(b"video")
+    pip_path.write_bytes(b"pip")
+    subtitle_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
+
+    result = service.process(
+        PostProcessRequest(
+            video_path=str(video_path),
+            picture_in_picture=PictureInPictureRequest(
+                enabled=True,
+                source_path=str(pip_path),
+                start_sec=2.0,
+                end_sec=6.5,
+                position="bottom_right",
+                scale=0.32,
+                border_width=4,
+                border_color="#FF0000",
+                shadow=True,
+                opacity=0.82,
+                animation="fade",
+                fade_duration=0.5,
+            ),
+            subtitle_path=str(subtitle_path),
+            burn_subtitles=True,
+            workspace=str(temp_workspace),
+            output_name="demo-pip",
+        )
+    )
+
+    assert result.success is True
+    assert result.steps_applied == ["pip", "subtitle"]
+    assert result.pip_video_path == str(temp_workspace / "postprocess" / "demo-pip_pip.mp4")
+    assert result.subtitle_video_path == str(temp_workspace / "postprocess" / "demo-pip_subtitle.mp4")
+    assert result.final_video_path == result.subtitle_video_path
+    assert result.pip_source_path == str(pip_path.resolve())
+    assert [name for name, _ in ffmpeg.calls] == ["pip", "subtitle"]
+    assert ffmpeg.calls[0][1]["border_width"] == 4
+    assert ffmpeg.calls[0][1]["border_color"] == "#FF0000"
+    assert ffmpeg.calls[0][1]["shadow"] is True
+    assert ffmpeg.calls[0][1]["opacity"] == 0.82
+    assert ffmpeg.calls[0][1]["animation"] == "fade"
+    assert ffmpeg.calls[0][1]["fade_duration"] == 0.5
+    assert ffmpeg.calls[1][1]["video_path"] == str(temp_workspace / "postprocess" / "demo-pip_pip.mp4")
 
 
 def test_postprocess_service_selects_named_bgm_and_supports_custom_cover_source(temp_workspace: Path) -> None:

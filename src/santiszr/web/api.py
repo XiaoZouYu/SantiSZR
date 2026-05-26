@@ -59,6 +59,7 @@ from santiszr.web.workspaces import (
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+VIDEO_SUFFIXES = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 TEXT_SUFFIXES = {".txt", ".srt", ".ass", ".md", ".json"}
 
 
@@ -161,6 +162,18 @@ def create_router() -> APIRouter:
         filename = file.filename or "upload.bin"
         suffix = Path(filename).suffix.lower()
         normalized_type = _normalize_upload_type(asset_type, kind)
+
+        if normalized_type in {"pip_image", "pip_video"}:
+            pip_kind = "image" if normalized_type == "pip_image" else "video"
+            allowed = IMAGE_SUFFIXES if pip_kind == "image" else VIDEO_SUFFIXES
+            if suffix not in allowed:
+                raise HTTPException(status_code=400, detail=f"Unsupported {normalized_type} file type: {suffix}")
+            workspace_path = _upload_workspace(context, workspace)
+            upload_dir = workspace_path / "pip" / pip_kind
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            destination = _unique_destination(upload_dir, filename)
+            await _write_upload(file, destination)
+            return _upload_response(_path_to_asset_info(destination, normalized_type, f"pip/{pip_kind}"), normalized_type)
 
         if normalized_type in {"audio", "video"}:
             workspace_path = _upload_workspace(context, workspace)
@@ -383,7 +396,7 @@ def _llm_status_for_health(context: AppContext) -> LLMStatusInfo:
         key_preview=_preview_secret(settings.api_key),
         message="大模型已配置，文案改写和字幕纠错可调用 AI。"
         if configured
-        else "未配置大模型 API Key，文案改写会使用本地规则，字幕大模型纠错会跳过。",
+        else "未配置大模型 API Key，文案改写不可用，字幕大模型纠错会跳过。",
     )
 
 
@@ -437,6 +450,7 @@ def _list_assets(context: AppContext) -> list[AssetInfo]:
                 *snapshot.subtitles,
                 *snapshot.avatar_videos,
                 *snapshot.styled_videos,
+                *snapshot.pip_assets,
                 *snapshot.covers,
                 *snapshot.drafts,
             ):
@@ -451,6 +465,10 @@ def _normalize_upload_type(asset_type: str | None, kind: str | None) -> str:
         "reference_video": "video",
         "reference-video": "video",
         "video": "video",
+        "pip_image": "pip_image",
+        "pip-image": "pip_image",
+        "pip_video": "pip_video",
+        "pip-video": "pip_video",
         "audio": "audio",
         "image": "image",
         "text": "text",

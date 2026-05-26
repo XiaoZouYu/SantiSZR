@@ -9,7 +9,6 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 import { PanelShell, TokenBadge } from "./common"
 import { assetPathFromUploadResponse, pathBasename } from "@/lib/utils"
-import type { AssetRecord } from "@/types"
 
 type Props = {
   workspace: string
@@ -23,7 +22,6 @@ type Props = {
   tags: string
   platforms: Record<string, boolean>
   statusNote: string
-  assetImages: AssetRecord[]
   videoPath: string
   fileUrl: (path: string) => string
   busy: boolean
@@ -70,12 +68,13 @@ export function PublishSection(props: Props) {
   const lastCoverRenderKeyRef = useRef("")
   const [uploading, setUploading] = useState(false)
   const [preparing, setPreparing] = useState(false)
-  const previewPath = props.coverPath || props.assetImages[0]?.path || ""
+  const hasVideo = Boolean(props.videoPath.trim())
+  const previewPath = hasVideo ? props.coverPath : ""
   const previewVersion = encodeURIComponent(
     `${previewPath}:${props.videoPath}:${props.coverTimestampSec}:${props.coverTitle}:${props.coverHighlight}`,
   )
   const previewUrl = previewPath ? `${props.fileUrl(previewPath)}&v=${previewVersion}` : ""
-  const hasVideo = Boolean(props.videoPath.trim())
+  const previewVideoUrl = !previewPath && hasVideo ? `${props.fileUrl(props.videoPath)}#t=0.001` : ""
   const hasTitle = Boolean(props.title.trim())
   const hasTags = Boolean(props.tags.trim())
   const ready = !props.disabledReason
@@ -116,6 +115,11 @@ export function PublishSection(props: Props) {
   }, [props.onRenderCover])
 
   useEffect(() => {
+    firstCoverRenderRef.current = true
+    lastCoverRenderKeyRef.current = ""
+  }, [props.videoPath])
+
+  useEffect(() => {
     if (!hasVideo) return
     const renderKey = JSON.stringify([
       props.videoPath,
@@ -123,12 +127,12 @@ export function PublishSection(props: Props) {
       props.coverTitle.trim(),
       props.coverHighlight.trim(),
     ])
+    if (lastCoverRenderKeyRef.current === renderKey) return
     if (firstCoverRenderRef.current) {
       firstCoverRenderRef.current = false
       lastCoverRenderKeyRef.current = renderKey
       return
     }
-    if (lastCoverRenderKeyRef.current === renderKey) return
     const timer = window.setTimeout(() => {
       lastCoverRenderKeyRef.current = renderKey
       void Promise.resolve(renderCoverRef.current()).catch(() => undefined)
@@ -189,11 +193,21 @@ export function PublishSection(props: Props) {
               <div className="mx-auto w-full max-w-[420px] overflow-hidden rounded-md border border-border bg-black shadow-sm">
                 {previewPath ? (
                   <img src={previewUrl} alt="封面预览" className="aspect-[9/16] w-full object-contain" />
+                ) : previewVideoUrl ? (
+                  <video
+                    key={previewVideoUrl}
+                    src={previewVideoUrl}
+                    muted
+                    playsInline
+                    preload="metadata"
+                    className="aspect-[9/16] w-full object-contain"
+                    aria-label="默认封面预览"
+                  />
                 ) : (
                   <div className="flex aspect-[9/16] items-center justify-center text-sm text-muted-foreground">
                     <div className="grid justify-items-center gap-2 px-4 text-center">
                       <ImageIcon className="h-6 w-6" />
-                      <span>点击 AI生成 后自动抽帧并叠加文案</span>
+                      <span>{hasVideo ? "正在从成片第 0 秒抽帧" : "生成成片后显示默认封面"}</span>
                     </div>
                   </div>
                 )}

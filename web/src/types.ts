@@ -145,6 +145,7 @@ export type AssetBuckets = {
   audio: AssetRecord[]
   video: AssetRecord[]
   image: AssetRecord[]
+  pip: AssetRecord[]
   subtitle: AssetRecord[]
   other: AssetRecord[]
 }

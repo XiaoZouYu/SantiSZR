@@ -1,8 +1,10 @@
 param(
     [int]$BackendPort = 7860,
     [int]$FrontendPort = 5173,
+    [int]$BrowserDebugPort = 9222,
     [ValidateSet("preview", "dev")]
-    [string]$FrontendMode = "preview"
+    [string]$FrontendMode = "preview",
+    [switch]$NoOpenBrowser
 )
 
 $ErrorActionPreference = "Stop"
@@ -60,6 +62,129 @@ function Wait-Port {
 
     Write-Warning "$Name did not start listening on port $Port within $TimeoutSeconds seconds."
     return $false
+}
+
+function Find-InstalledChromiumBrowser {
+    $candidates = @(
+        (Join-Path $env:ProgramFiles "Google\Chrome\Application\chrome.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe"),
+        (Join-Path $env:LOCALAPPDATA "Google\Chrome\Application\chrome.exe"),
+        (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"),
+        (Join-Path $env:LOCALAPPDATA "Microsoft\Edge\Application\msedge.exe")
+    )
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+function Find-PlaywrightChromium {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectRoot
+    )
+
+    $roots = @()
+    if ($env:PLAYWRIGHT_BROWSERS_PATH -and $env:PLAYWRIGHT_BROWSERS_PATH -ne "0") {
+        $roots += $env:PLAYWRIGHT_BROWSERS_PATH
+    }
+    $roots += @(
+        (Join-Path $ProjectRoot ".venv\Lib\site-packages\playwright\driver\package\.local-browsers"),
+        (Join-Path $ProjectRoot "web\node_modules\playwright-core\.local-browsers"),
+        (Join-Path $env:LOCALAPPDATA "ms-playwright"),
+        (Join-Path $env:USERPROFILE "AppData\Local\ms-playwright")
+    )
+
+    foreach ($root in $roots | Select-Object -Unique) {
+        if (-not $root -or -not (Test-Path -LiteralPath $root)) {
+            continue
+        }
+        $matches = @(
+            Get-ChildItem -LiteralPath $root -Directory -Filter "chromium-*" -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                    @(
+                        (Join-Path $_.FullName "chrome-win64\chrome.exe"),
+                        (Join-Path $_.FullName "chrome-win\chrome.exe")
+                    )
+                } |
+                Where-Object { Test-Path -LiteralPath $_ }
+        )
+        if ($matches.Count -eq 0) {
+            $matches = @(Get-ChildItem -LiteralPath $root -Recurse -Filter "chrome.exe" -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match "[\\/]chromium-[^\\/]+[\\/]" } |
+                Select-Object -ExpandProperty FullName)
+        }
+        $matches = @($matches | Sort-Object -Descending)
+        if ($matches.Count -gt 0) {
+            return $matches[0]
+        }
+    }
+
+    return $null
+}
+
+function Find-InteractiveBrowser {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectRoot
+    )
+
+    $installed = Find-InstalledChromiumBrowser
+    if ($installed) {
+        return $installed
+    }
+
+    return Find-PlaywrightChromium -ProjectRoot $ProjectRoot
+}
+
+function Open-InternalBrowser {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$Url,
+        [Parameter(Mandatory = $true)]
+        [int]$DebugPort
+    )
+
+    $endpoint = "http://127.0.0.1:$DebugPort"
+    try {
+        Invoke-RestMethod -Uri "$endpoint/json/version" -TimeoutSec 1 | Out-Null
+        $encodedUrl = [Uri]::EscapeDataString($Url)
+        try {
+            Invoke-RestMethod -Method Put -Uri "$endpoint/json/new?$encodedUrl" -TimeoutSec 2 | Out-Null
+        } catch {
+            Invoke-RestMethod -Uri "$endpoint/json/new?$encodedUrl" -TimeoutSec 2 | Out-Null
+        }
+        Write-Host "Opened a new tab in existing browser: $Url"
+        return
+    } catch {
+        Write-Host "No existing browser found on debug port $DebugPort."
+    }
+
+    $browser = Find-InteractiveBrowser -ProjectRoot $ProjectRoot
+    if (-not $browser) {
+        Write-Warning "Chrome/Edge/Playwright Chromium was not found. Install Google Chrome or run: .\.venv\Scripts\python.exe -m playwright install chromium"
+        return
+    }
+
+    $profileDir = Join-Path $ProjectRoot ".cache\publish-browser"
+    New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
+    $arguments = @(
+        "--remote-debugging-port=$DebugPort",
+        "--user-data-dir=$profileDir",
+        "--no-first-run",
+        "--no-default-browser-check",
+        $Url
+    )
+
+    Write-Host "Starting browser: $browser"
+    Start-Process -FilePath $browser -ArgumentList $arguments -WorkingDirectory $ProjectRoot
 }
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -166,6 +291,11 @@ try {
     Write-Host "Backend health: $($health.app) $($health.version)"
 } catch {
     Write-Warning "Backend health check failed: $($_.Exception.Message)"
+}
+
+if (-not $NoOpenBrowser) {
+    Open-InternalBrowser -ProjectRoot $ProjectRoot -Url "http://127.0.0.1:$FrontendPort" -DebugPort $BrowserDebugPort
+    Write-Host "Browser debug URL: http://127.0.0.1:$BrowserDebugPort"
 }
 
 Write-Host "Restart complete."

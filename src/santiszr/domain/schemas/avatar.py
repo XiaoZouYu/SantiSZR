@@ -16,8 +16,6 @@ class AvatarRequest(BaseModel):
     audio_path: str
     model_id: str = "uploaded-avatar"
     engine: AvatarEngine = AvatarEngine.tuilionnx
-    resolution: str = "1080p"
-    fps: int = 25
     workspace: str | None = None
     subtitle_path: str | None = None
     subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)

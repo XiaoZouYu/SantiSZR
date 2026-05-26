@@ -82,7 +82,7 @@ export function CopywritingSection(props: Props) {
       : `上次使用 ${lastProvider}`
     : llmConfigured
       ? `AI 已配置：${props.llmStatus?.model || props.rewriteModel}`
-      : "未配置 AI，当前会用本地规则"
+      : "未配置 AI，请先在设置里保存并测试大模型配置"
 
   return (
     <PanelShell
@@ -170,7 +170,7 @@ export function CopywritingSection(props: Props) {
             <div className="grid gap-4">
               <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-background/55 px-3 py-3 text-sm">
                 <TokenBadge tone={llmConfigured ? "success" : "warning"}>
-                  {llmConfigured ? "AI 改写可用" : "本地规则模式"}
+                  {llmConfigured ? "AI 改写可用" : "AI 未配置"}
                 </TokenBadge>
                 <span className="text-muted-foreground">{providerLabel}</span>
                 {!llmConfigured ? (
