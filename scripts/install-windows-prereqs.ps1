@@ -575,6 +575,42 @@ function Ensure-HelperNumpyRuntime {
     Write-Host "$HelperName helper numpy verified: $($repairedInfo.ModuleVersion)."
 }
 
+function Ensure-HelperPytorchDependencies {
+    param(
+        [Parameter(Mandatory = $true)][string]$HelperName,
+        [Parameter(Mandatory = $true)][string]$PythonExe
+    )
+
+    $packages = @(
+        "filelock",
+        "typing-extensions>=4.10.0",
+        "setuptools<82",
+        "sympy>=1.13.3",
+        "networkx>=2.5.1",
+        "jinja2",
+        "fsspec>=0.8.5",
+        "pillow>=5.3.0",
+        "mpmath<1.4,>=1.1.0"
+    )
+
+    $installed = $false
+    $installErrors = @()
+    foreach ($index in (Get-PypiInstallIndexes)) {
+        Write-Host "Installing $HelperName helper PyTorch dependencies from $($index.Name) index: $($index.Url)..."
+        & $PythonExe -m pip install --upgrade --no-cache-dir @packages --index-url $index.Url
+        if ($LASTEXITCODE -eq 0) {
+            $installed = $true
+            break
+        }
+        $installErrors += "$($index.Name): exit code $LASTEXITCODE"
+        Write-Warning "PyTorch dependency install from $($index.Name) failed. Trying the next index if available."
+    }
+
+    if (-not $installed) {
+        throw "Failed to install PyTorch dependencies for $HelperName helper Python: $PythonExe. Attempts: $($installErrors -join '; ')"
+    }
+}
+
 function Test-HelperTorchMatches {
     param(
         [Parameter(Mandatory = $true)]$TorchInfo,
@@ -683,11 +719,14 @@ function Ensure-HelperPytorchRuntime {
             Write-Host "$($helper.Name) helper PyTorch is missing or unreadable: $($torchInfo.Error)"
         }
 
+        Ensure-HelperNumpyRuntime -HelperName $helper.Name -PythonExe $helper.Path
+        Ensure-HelperPytorchDependencies -HelperName $helper.Name -PythonExe $helper.Path
+
         $installed = $false
         $installErrors = @()
         foreach ($index in (Get-PytorchInstallIndexes -WheelIndex $WheelIndex)) {
             Write-Host "Installing $($helper.Name) helper PyTorch from $($index.Name) index: $($index.Url) ($($WheelIndex.Reason))..."
-            & $helper.Path -m pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url $index.Url
+            & $helper.Path -m pip install --upgrade --force-reinstall --no-deps torch torchvision torchaudio --index-url $index.Url
             if ($LASTEXITCODE -eq 0) {
                 $installed = $true
                 break
