@@ -642,10 +642,8 @@ try:
         raise SystemExit
 
     options = ort.SessionOptions()
-    try:
-        options.add_session_config_entry('session.disable_cpu_ep_fallback', '1')
-    except Exception:
-        pass
+    options.intra_op_num_threads = 1
+    options.inter_op_num_threads = 1
     session = ort.InferenceSession(str(model_path), sess_options=options, providers=['CUDAExecutionProvider'])
     active = session.get_providers()
     ok = bool(active) and active[0] == 'CUDAExecutionProvider'

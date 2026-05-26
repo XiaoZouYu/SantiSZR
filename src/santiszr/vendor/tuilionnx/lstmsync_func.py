@@ -50,13 +50,14 @@ def _make_cuda_session_options():
     options = ort.SessionOptions()
     options.intra_op_num_threads = 1
     options.inter_op_num_threads = 1
-    try:
-        options.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
-    except Exception as exc:
-        raise RuntimeError(
-            "TuiliONNX GPU runtime requires ONNX Runtime support for disabling CPU EP fallback."
-        ) from exc
     return options
+
+
+def _quiet_ort_provider_logs() -> None:
+    try:
+        ort.set_default_logger_severity(3)
+    except Exception:
+        pass
 
 
 def _assert_ort_cuda_session(session, *, label: str) -> None:
@@ -64,7 +65,7 @@ def _assert_ort_cuda_session(session, *, label: str) -> None:
     if not providers or providers[0] != "CUDAExecutionProvider":
         raise RuntimeError(
             f"{label} is not using CUDAExecutionProvider as the primary execution provider. "
-            f"Active providers: {providers}. CPU fallback is not allowed."
+            f"Active providers: {providers}. Full CPU fallback is not allowed."
         )
 
 
@@ -298,8 +299,6 @@ class FaceDetector:
             session = getattr(model, "session", None)
             if session is None or not hasattr(session, "get_providers"):
                 continue
-            if hasattr(session, "disable_fallback"):
-                session.disable_fallback()
             _assert_ort_cuda_session(session, label=f"InsightFace {name} model")
 
     def __call__(self, frame, threshold=0.5):
@@ -583,13 +582,12 @@ class LstmSync():
         self.assert_gpu_runtime()
 
     def _load_ort_session(self):
+        _quiet_ort_provider_logs()
         session = ort.InferenceSession(
             self.human_path,
             sess_options=_make_cuda_session_options(),
             providers=["CUDAExecutionProvider"],
         )
-        if hasattr(session, "disable_fallback"):
-            session.disable_fallback()
         _assert_ort_cuda_session(session, label="TuiliONNX lip-sync ONNX model")
         return session
 
@@ -614,7 +612,7 @@ class LstmSync():
         return [
             f"TuiliONNX GPU verified: {_cuda_summary()}.",
             "TuiliONNX ONNX Runtime providers: "
-            f"{', '.join(self.ort_session.get_providers())}; CPU EP fallback disabled.",
+            f"{', '.join(self.ort_session.get_providers())}; CUDAExecutionProvider is primary.",
             "TuiliONNX media pipeline: "
             f"FFmpeg encoder={self.video_encoder}, OpenCV threads={self.opencv_threads}.",
         ]
