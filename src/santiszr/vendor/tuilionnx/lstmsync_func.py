@@ -23,6 +23,7 @@ __all__ = ["LstmSync"]
 __dir__ = []
 
 DEFAULT_MAX_REFERENCE_EDGE = 720
+DEFAULT_OPENCV_THREADS = 2
 
 
 def _env_int(name: str, default: int) -> int:
@@ -34,6 +35,56 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _configure_opencv_threads() -> int:
+    threads = _env_int("SANTISZR_TUILIONNX_OPENCV_THREADS", DEFAULT_OPENCV_THREADS)
+    try:
+        cv2.setNumThreads(threads)
+        return int(cv2.getNumThreads())
+    except Exception:
+        return threads
+
+
+def _make_cuda_session_options():
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 1
+    options.inter_op_num_threads = 1
+    try:
+        options.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
+    except Exception as exc:
+        raise RuntimeError(
+            "TuiliONNX GPU runtime requires ONNX Runtime support for disabling CPU EP fallback."
+        ) from exc
+    return options
+
+
+def _assert_ort_cuda_session(session, *, label: str) -> None:
+    providers = list(session.get_providers())
+    if not providers or providers[0] != "CUDAExecutionProvider":
+        raise RuntimeError(
+            f"{label} is not using CUDAExecutionProvider as the primary execution provider. "
+            f"Active providers: {providers}. CPU fallback is not allowed."
+        )
+
+
+def _assert_torch_module_on_cuda(module, *, label: str) -> None:
+    try:
+        parameter = next(module.parameters())
+    except StopIteration as exc:
+        raise RuntimeError(f"{label} has no parameters to verify CUDA placement.") from exc
+    if parameter.device.type != "cuda":
+        raise RuntimeError(
+            f"{label} is on {parameter.device}, expected CUDA. CPU inference is not allowed."
+        )
+
+
+def _cuda_summary() -> str:
+    if not torch.cuda.is_available():
+        return "unavailable"
+    index = torch.cuda.current_device()
+    name = torch.cuda.get_device_name(index)
+    return f"{name} (cuda:{index}, torch CUDA {torch.version.cuda})"
 
 
 def _resize_frame_to_max_edge(frame: np.ndarray, max_edge: int) -> np.ndarray:
@@ -243,6 +294,13 @@ class FaceDetector:
             providers=["CUDAExecutionProvider"],
         )
         self.app.prepare(ctx_id=cuda_to_int(device), det_size=(INSIGHTFACE_DETECT_SIZE, INSIGHTFACE_DETECT_SIZE))
+        for name, model in getattr(self.app, "models", {}).items():
+            session = getattr(model, "session", None)
+            if session is None or not hasattr(session, "get_providers"):
+                continue
+            if hasattr(session, "disable_fallback"):
+                session.disable_fallback()
+            _assert_ort_cuda_session(session, label=f"InsightFace {name} model")
 
     def __call__(self, frame, threshold=0.5):
         f_h, f_w, _ = frame.shape
@@ -509,6 +567,7 @@ class LstmSync():
         self.device = 'cuda'
         self.ffmpeg_path = str(ffmpeg_path)
         self.video_encoder = str(video_encoder)
+        self.opencv_threads = _configure_opencv_threads()
         self.mask_image = load_fixed_mask(self.hparams_img_size, self.mask_image_path)
         self.detect_face = ImageProcessor(
             resolution=self.hparams_img_size,
@@ -521,12 +580,18 @@ class LstmSync():
         self.input_names = [item.name for item in self.ort_session.get_inputs()]
         self.model_dtype = np.float16 if "float16" in self.ort_session.get_inputs()[0].type else np.float32
         self.feature_extractor, self.audio_model = self._load_audio_model()
+        self.assert_gpu_runtime()
 
     def _load_ort_session(self):
-        return ort.InferenceSession(
+        session = ort.InferenceSession(
             self.human_path,
+            sess_options=_make_cuda_session_options(),
             providers=["CUDAExecutionProvider"],
         )
+        if hasattr(session, "disable_fallback"):
+            session.disable_fallback()
+        _assert_ort_cuda_session(session, label="TuiliONNX lip-sync ONNX model")
+        return session
 
     def _load_audio_model(self):
         feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(self.hubert_path)
@@ -534,7 +599,25 @@ class LstmSync():
         model = model.to(self.device)
         model = model.half()
         model.eval()
+        _assert_torch_module_on_cuda(model, label="TuiliONNX Hubert audio model")
         return feature_extractor, model
+
+    def assert_gpu_runtime(self) -> None:
+        if not torch.cuda.is_available():
+            raise RuntimeError("TuiliONNX GPU runtime is unavailable: CUDA is not available.")
+        if "CUDAExecutionProvider" not in ort.get_available_providers():
+            raise RuntimeError("TuiliONNX GPU runtime is unavailable: ONNX Runtime CUDAExecutionProvider is missing.")
+        _assert_ort_cuda_session(self.ort_session, label="TuiliONNX lip-sync ONNX model")
+        _assert_torch_module_on_cuda(self.audio_model, label="TuiliONNX Hubert audio model")
+
+    def runtime_notes(self) -> list[str]:
+        return [
+            f"TuiliONNX GPU verified: {_cuda_summary()}.",
+            "TuiliONNX ONNX Runtime providers: "
+            f"{', '.join(self.ort_session.get_providers())}; CPU EP fallback disabled.",
+            "TuiliONNX media pipeline: "
+            f"FFmpeg encoder={self.video_encoder}, OpenCV threads={self.opencv_threads}.",
+        ]
 
     def _run_ffmpeg(self, command: list[str]) -> None:
         completed = subprocess.run(
@@ -614,6 +697,7 @@ class LstmSync():
 
 
     def run(self, video_path, video_fps25_path, video_temp_path, audio_path, audio_temp_path, video_out_path, compress_inference_check_box=None):
+        self.assert_gpu_runtime()
         if compress_inference_check_box is not None:
             self.compress_inference_check_box = compress_inference_check_box
 

@@ -114,8 +114,8 @@ class AvatarRenderRuntime:
         self._runtimes: dict[_RuntimeKey, object] = {}
 
     def render(self, request: dict[str, object]) -> tuple[Path, Path, list[str]]:
-        import onnxruntime as ort
         import torch
+        import onnxruntime as ort
 
         if not torch.cuda.is_available():
             raise RuntimeError("TuiliONNX GPU runtime is unavailable: CUDA is not available.")
@@ -215,7 +215,8 @@ class AvatarRenderRuntime:
         )
         cached = self._runtimes.get(key)
         if cached is not None:
-            return cached, ["Reused cached TuiliONNX GPU runtime."]
+            self._assert_runtime_gpu(cached)
+            return cached, ["Reused cached TuiliONNX GPU runtime.", *self._runtime_notes(cached)]
 
         checkpoints_root = self.model_root / "checkpoints"
         human_path = checkpoints_root / ("256.onnx" if key.beautify_teeth else "256_m.onnx")
@@ -232,8 +233,20 @@ class AvatarRenderRuntime:
             ffmpeg_path=key.ffmpeg_path,
             video_encoder=key.video_encoder,
         )
+        self._assert_runtime_gpu(runtime)
         self._runtimes[key] = runtime
-        return runtime, [f"Loaded TuiliONNX GPU runtime from {checkpoints_root}."]
+        return runtime, [f"Loaded TuiliONNX GPU runtime from {checkpoints_root}.", *self._runtime_notes(runtime)]
+
+    def _assert_runtime_gpu(self, runtime: object) -> None:
+        assert_gpu_runtime = getattr(runtime, "assert_gpu_runtime", None)
+        if callable(assert_gpu_runtime):
+            assert_gpu_runtime()
+
+    def _runtime_notes(self, runtime: object) -> list[str]:
+        runtime_notes = getattr(runtime, "runtime_notes", None)
+        if callable(runtime_notes):
+            return [str(item) for item in runtime_notes() if str(item).strip()]
+        return []
 
 
 def main() -> int:

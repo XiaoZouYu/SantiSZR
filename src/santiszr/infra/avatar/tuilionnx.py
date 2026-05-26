@@ -149,6 +149,13 @@ class TuiliOnnxAdapter:
             env["SANTISZR_TUILIONNX_HELPER_MODE"] = "1"
             env["SANTISZR_TUILIONNX_MODEL_DIR"] = str(self.model_root)
             env["SANTISZR_TUILIONNX_PYTHON"] = str(self.helper_python)
+            helper_threads = (
+                env.get("SANTISZR_TUILIONNX_CPU_THREADS")
+                or env.get("SANTISZR_TUILIONNX_OPENCV_THREADS")
+                or "2"
+            )
+            for variable in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+                env.setdefault(variable, helper_threads)
 
             process = subprocess.Popen(
                 [str(self.helper_python), "-u", "-m", "santiszr.infra.avatar.tuilionnx_helper"],
