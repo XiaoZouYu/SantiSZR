@@ -83,17 +83,33 @@ function Invoke-PythonProbe {
         [Parameter(Mandatory = $true)][string]$Probe
     )
 
-    $previousNativeErrorPreference = $null
-    $hasNativeErrorPreference = Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
-    if ($hasNativeErrorPreference) {
-        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
-        $PSNativeCommandUseErrorActionPreference = $false
-    }
+    $script:LastPythonProbeExitCode = -1
+    $probePath = Join-Path ([System.IO.Path]::GetTempPath()) ("santiszr-probe-" + [guid]::NewGuid().ToString("N") + ".py")
     try {
-        return & $PythonExe -c $Probe 2>$null
+        Set-Content -LiteralPath $probePath -Value $Probe -Encoding UTF8
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $PythonExe
+        $startInfo.Arguments = "`"$probePath`""
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.CreateNoWindow = $true
+
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+        [void]$process.Start()
+        $stdout = $process.StandardOutput.ReadToEnd()
+        [void]$process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        $script:LastPythonProbeExitCode = $process.ExitCode
+        $global:LASTEXITCODE = $process.ExitCode
+        if (-not $stdout) {
+            return @()
+        }
+        return @($stdout -split "\r?\n" | Where-Object { $_ -ne "" })
     } finally {
-        if ($hasNativeErrorPreference) {
-            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        if (Test-Path -LiteralPath $probePath) {
+            Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -386,7 +402,7 @@ except Exception as exc:
 "@
 
     $output = Invoke-PythonProbe -PythonExe $PythonExe -Probe $probe
-    if ($LASTEXITCODE -ne 0 -or -not $output) {
+    if ($script:LastPythonProbeExitCode -ne 0 -or -not $output) {
         return [pscustomobject]@{
             Ok = $false
             Version = $null
@@ -442,7 +458,7 @@ except Exception as exc:
 "@
 
     $output = Invoke-PythonProbe -PythonExe $PythonExe -Probe $probe
-    if ($LASTEXITCODE -ne 0 -or -not $output) {
+    if ($script:LastPythonProbeExitCode -ne 0 -or -not $output) {
         return [pscustomobject]@{
             Ok = $false
             ModuleVersion = $null
@@ -501,7 +517,7 @@ except Exception as exc:
 "@
 
     $output = Invoke-PythonProbe -PythonExe $PythonExe -Probe $probe
-    if ($LASTEXITCODE -ne 0 -or -not $output) {
+    if ($script:LastPythonProbeExitCode -ne 0 -or -not $output) {
         return [pscustomobject]@{
             Ok = $false
             Version = $null
@@ -644,7 +660,7 @@ except Exception as exc:
 "@
 
     $output = Invoke-PythonProbe -PythonExe $PythonExe -Probe $probe
-    if ($LASTEXITCODE -ne 0 -or -not $output) {
+    if ($script:LastPythonProbeExitCode -ne 0 -or -not $output) {
         return [pscustomobject]@{
             Ok = $false
             Version = $null
