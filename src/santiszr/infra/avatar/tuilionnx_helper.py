@@ -53,12 +53,15 @@ def _configure_windows_runtime() -> None:
     if runtime_python:
         python_path = Path(runtime_python).expanduser().resolve()
         runtime_root = python_path.parent
+        site_packages = runtime_root / "Lib" / "site-packages"
         candidate_dirs.extend(
             [
                 runtime_root,
                 runtime_root / "bin",
                 runtime_root / "DLLs",
                 runtime_root / "Library" / "bin",
+                site_packages / "onnxruntime" / "capi",
+                site_packages / "torch" / "lib",
             ]
         )
 

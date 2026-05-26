@@ -448,6 +448,274 @@ except Exception as exc:
     }
 }
 
+function ConvertTo-VersionOrZero {
+    param([string]$VersionText)
+
+    if (-not $VersionText) {
+        return [version]"0.0.0"
+    }
+    $cleanVersion = ($VersionText -split "\+")[0]
+    try {
+        return [version]$cleanVersion
+    } catch {
+        return [version]"0.0.0"
+    }
+}
+
+function Get-HelperOnnxRuntimeInfo {
+    param([Parameter(Mandatory = $true)][string]$PythonExe)
+
+    if (-not (Test-Path -LiteralPath $PythonExe)) {
+        return $null
+    }
+
+    $probe = @"
+import json
+try:
+    import onnxruntime as ort
+    providers = ort.get_available_providers()
+    print(json.dumps({'ok': True, 'version': ort.__version__, 'providers': providers}))
+except Exception as exc:
+    print(json.dumps({'ok': False, 'error': str(exc)}))
+"@
+
+    $output = & $PythonExe -c $probe 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $output) {
+        return [pscustomobject]@{
+            Ok = $false
+            Version = $null
+            Providers = @()
+            Error = "Could not run ONNX Runtime probe."
+        }
+    }
+
+    try {
+        $parsed = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        return [pscustomobject]@{
+            Ok = [bool]$parsed.ok
+            Version = $parsed.version
+            Providers = @($parsed.providers)
+            Error = $parsed.error
+        }
+    } catch {
+        return [pscustomobject]@{
+            Ok = $false
+            Version = $null
+            Providers = @()
+            Error = "Could not parse ONNX Runtime probe output: $output"
+        }
+    }
+}
+
+function Test-HelperOnnxRuntimeMatches {
+    param(
+        [Parameter(Mandatory = $true)]$OrtInfo,
+        [Parameter(Mandatory = $true)]$WheelIndex
+    )
+
+    if (-not $OrtInfo -or -not $OrtInfo.Ok) {
+        return $false
+    }
+    if ($OrtInfo.Providers -notcontains "CUDAExecutionProvider") {
+        return $false
+    }
+
+    $version = ConvertTo-VersionOrZero -VersionText $OrtInfo.Version
+    if ($WheelIndex.Name -eq "cu128" -and $version -lt [version]"1.24.0") {
+        return $false
+    }
+    if ($WheelIndex.Name -eq "cu126" -and $version -lt [version]"1.20.0") {
+        return $false
+    }
+    if ($WheelIndex.Name -eq "cu118" -and $version -lt [version]"1.18.0") {
+        return $false
+    }
+    return $true
+}
+
+function Resolve-OnnxRuntimeGpuRequirement {
+    param([Parameter(Mandatory = $true)]$WheelIndex)
+
+    if ($WheelIndex.Name -eq "cu128") {
+        return "onnxruntime-gpu>=1.24.0"
+    }
+    if ($WheelIndex.Name -eq "cu126") {
+        return "onnxruntime-gpu>=1.20.0"
+    }
+    return "onnxruntime-gpu>=1.18.0"
+}
+
+function Test-HelperOnnxRuntimeCudaSession {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$PythonExe
+    )
+
+    $probeModel = Join-Path $ProjectRoot "models\tuilionnx\checkpoints\auxiliary\models\buffalo_l\2d106det.onnx"
+    $probeModelLiteral = $probeModel.Replace("\", "\\").Replace("'", "\'")
+    $probe = @"
+import json
+import os
+import pathlib
+import sys
+
+def add_dll_dir(path):
+    if not path.exists():
+        return
+    text = str(path)
+    try:
+        os.add_dll_directory(text)
+    except Exception:
+        pass
+    current_path = os.environ.get('PATH', '')
+    if text not in current_path.split(os.pathsep):
+        os.environ['PATH'] = text + os.pathsep + current_path
+
+python_root = pathlib.Path(sys.executable).resolve().parent
+site_packages = python_root / 'Lib' / 'site-packages'
+for directory in (
+    python_root,
+    python_root / 'bin',
+    python_root / 'DLLs',
+    python_root / 'Library' / 'bin',
+    site_packages / 'onnxruntime' / 'capi',
+    site_packages / 'torch' / 'lib',
+):
+    add_dll_dir(directory)
+
+try:
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.init()
+    import onnxruntime as ort
+    if hasattr(ort, 'preload_dlls'):
+        try:
+            ort.preload_dlls()
+        except TypeError:
+            ort.preload_dlls(cuda=True, cudnn=True, msvc=True)
+
+    providers = ort.get_available_providers()
+    if 'CUDAExecutionProvider' not in providers:
+        print(json.dumps({'ok': False, 'version': ort.__version__, 'providers': providers, 'error': 'CUDAExecutionProvider is not available.'}))
+        raise SystemExit
+
+    model_path = pathlib.Path('$probeModelLiteral')
+    if not model_path.exists():
+        print(json.dumps({'ok': True, 'version': ort.__version__, 'providers': providers, 'session_probed': False}))
+        raise SystemExit
+
+    options = ort.SessionOptions()
+    try:
+        options.add_session_config_entry('session.disable_cpu_ep_fallback', '1')
+    except Exception:
+        pass
+    session = ort.InferenceSession(str(model_path), sess_options=options, providers=['CUDAExecutionProvider'])
+    active = session.get_providers()
+    ok = bool(active) and active[0] == 'CUDAExecutionProvider'
+    if ok:
+        import numpy as np
+        input_meta = session.get_inputs()[0]
+        shape = [1 if not isinstance(dim, int) else dim for dim in input_meta.shape]
+        session.run(None, {input_meta.name: np.zeros(tuple(shape), dtype=np.float32)})
+    print(json.dumps({'ok': ok, 'version': ort.__version__, 'providers': providers, 'active_providers': active, 'session_probed': True}))
+except Exception as exc:
+    print(json.dumps({'ok': False, 'error': str(exc)}))
+"@
+
+    $output = & $PythonExe -c $probe 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $output) {
+        return [pscustomobject]@{
+            Ok = $false
+            Version = $null
+            Providers = @()
+            ActiveProviders = @()
+            SessionProbed = $false
+            Error = "Could not run ONNX Runtime CUDA session probe."
+        }
+    }
+
+    try {
+        $parsed = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        return [pscustomobject]@{
+            Ok = [bool]$parsed.ok
+            Version = $parsed.version
+            Providers = @($parsed.providers)
+            ActiveProviders = @($parsed.active_providers)
+            SessionProbed = [bool]$parsed.session_probed
+            Error = $parsed.error
+        }
+    } catch {
+        return [pscustomobject]@{
+            Ok = $false
+            Version = $null
+            Providers = @()
+            ActiveProviders = @()
+            SessionProbed = $false
+            Error = "Could not parse ONNX Runtime CUDA probe output: $output"
+        }
+    }
+}
+
+function Ensure-HelperOnnxRuntimeGpu {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$HelperName,
+        [Parameter(Mandatory = $true)][string]$PythonExe,
+        [Parameter(Mandatory = $true)]$WheelIndex
+    )
+
+    $ortInfo = Get-HelperOnnxRuntimeInfo -PythonExe $PythonExe
+    $sessionInfo = Test-HelperOnnxRuntimeCudaSession -ProjectRoot $ProjectRoot -PythonExe $PythonExe
+    if (
+        (Test-HelperOnnxRuntimeMatches -OrtInfo $ortInfo -WheelIndex $WheelIndex) `
+        -and $sessionInfo `
+        -and $sessionInfo.Ok
+    ) {
+        $activeText = if ($sessionInfo.ActiveProviders.Count -gt 0) { $sessionInfo.ActiveProviders -join "," } else { $ortInfo.Providers -join "," }
+        Write-Host "$HelperName helper ONNX Runtime GPU is ready: onnxruntime-gpu $($ortInfo.Version), providers=$activeText."
+        return
+    }
+
+    if ($ortInfo -and $ortInfo.Ok) {
+        Write-Host "$HelperName helper ONNX Runtime GPU needs update or repair: version=$($ortInfo.Version), providers=$($ortInfo.Providers -join ','), sessionError=$($sessionInfo.Error)."
+    } elseif ($ortInfo) {
+        Write-Host "$HelperName helper ONNX Runtime GPU is missing or unreadable: $($ortInfo.Error)"
+    } else {
+        Write-Host "$HelperName helper ONNX Runtime GPU is missing."
+    }
+
+    Stop-HelperPythonProcesses -HelperName $HelperName -PythonExe $PythonExe
+
+    $requirement = Resolve-OnnxRuntimeGpuRequirement -WheelIndex $WheelIndex
+    $installed = $false
+    $installErrors = @()
+    foreach ($index in (Get-PypiInstallIndexes)) {
+        Write-Host "Installing $HelperName helper $requirement from $($index.Name) index: $($index.Url)..."
+        & $PythonExe -m pip install --upgrade --force-reinstall --no-deps --no-cache-dir $requirement --index-url $index.Url
+        if ($LASTEXITCODE -eq 0) {
+            $installed = $true
+            break
+        }
+        $installErrors += "$($index.Name): exit code $LASTEXITCODE"
+        Write-Warning "ONNX Runtime GPU install from $($index.Name) failed. Trying the next index if available."
+    }
+
+    if (-not $installed) {
+        throw "Failed to install ONNX Runtime GPU for $HelperName helper Python: $PythonExe. Attempts: $($installErrors -join '; ')"
+    }
+
+    $updatedInfo = Get-HelperOnnxRuntimeInfo -PythonExe $PythonExe
+    $updatedSessionInfo = Test-HelperOnnxRuntimeCudaSession -ProjectRoot $ProjectRoot -PythonExe $PythonExe
+    if (
+        -not (Test-HelperOnnxRuntimeMatches -OrtInfo $updatedInfo -WheelIndex $WheelIndex) `
+        -or -not $updatedSessionInfo `
+        -or -not $updatedSessionInfo.Ok
+    ) {
+        throw "$HelperName helper ONNX Runtime GPU install completed, but CUDA session verification failed. version=$($updatedInfo.Version), providers=$($updatedInfo.Providers -join ','), error=$($updatedSessionInfo.Error)"
+    }
+    Write-Host "$HelperName helper ONNX Runtime GPU verified: onnxruntime-gpu $($updatedInfo.Version), providers=$($updatedSessionInfo.ActiveProviders -join ',')."
+}
+
 function Repair-BrokenHelperNumpyFiles {
     param(
         [Parameter(Mandatory = $true)][string]$HelperName,
@@ -710,6 +978,7 @@ function Ensure-HelperPytorchRuntime {
         if (Test-HelperTorchMatches -TorchInfo $torchInfo -WheelIndex $WheelIndex) {
             Write-Host "$($helper.Name) helper PyTorch is already compatible: torch $($torchInfo.Version), CUDA $($torchInfo.Cuda)."
             Ensure-HelperNumpyRuntime -HelperName $helper.Name -PythonExe $helper.Path
+            Ensure-HelperOnnxRuntimeGpu -ProjectRoot $ProjectRoot -HelperName $helper.Name -PythonExe $helper.Path -WheelIndex $WheelIndex
             continue
         }
 
@@ -745,6 +1014,7 @@ function Ensure-HelperPytorchRuntime {
         }
         Write-Host "$($helper.Name) helper PyTorch verified: torch $($updatedInfo.Version), CUDA $($updatedInfo.Cuda), arch=$($updatedInfo.Arch -join ',')."
         Ensure-HelperNumpyRuntime -HelperName $helper.Name -PythonExe $helper.Path
+        Ensure-HelperOnnxRuntimeGpu -ProjectRoot $ProjectRoot -HelperName $helper.Name -PythonExe $helper.Path -WheelIndex $WheelIndex
     }
 }
 
