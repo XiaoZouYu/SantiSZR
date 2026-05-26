@@ -380,6 +380,181 @@ function Get-PypiInstallIndexes {
     return $indexes
 }
 
+function Test-WhisperModelDir {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return $false
+    }
+
+    foreach ($name in @("config.json", "model.bin", "tokenizer.json")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Path $name) -PathType Leaf)) {
+            return $false
+        }
+    }
+
+    $vocabulary = @(Get-ChildItem -LiteralPath $Path -Filter "vocabulary.*" -File -ErrorAction SilentlyContinue)
+    return $vocabulary.Count -gt 0
+}
+
+function Test-WhisperModelFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$ModelRoot,
+        [Parameter(Mandatory = $true)][string]$ModelName
+    )
+
+    $directDir = Join-Path $ModelRoot $ModelName
+    if (Test-WhisperModelDir -Path $directDir) {
+        return $true
+    }
+
+    $cacheDir = Join-Path $ModelRoot "models--Systran--faster-whisper-$ModelName"
+    $refPath = Join-Path $cacheDir "refs\main"
+    if (Test-Path -LiteralPath $refPath -PathType Leaf) {
+        try {
+            $snapshotName = (Get-Content -LiteralPath $refPath -Raw).Trim()
+            if ($snapshotName) {
+                $snapshotDir = Join-Path (Join-Path $cacheDir "snapshots") $snapshotName
+                if (Test-WhisperModelDir -Path $snapshotDir) {
+                    return $true
+                }
+            }
+        } catch {
+        }
+    }
+
+    $snapshotsRoot = Join-Path $cacheDir "snapshots"
+    if (Test-Path -LiteralPath $snapshotsRoot -PathType Container) {
+        $snapshots = @(Get-ChildItem -LiteralPath $snapshotsRoot -Directory -ErrorAction SilentlyContinue)
+        foreach ($snapshot in $snapshots) {
+            if (Test-WhisperModelDir -Path $snapshot.FullName) {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
+
+function Get-HuggingFaceDownloadEndpoints {
+    $endpoints = @()
+
+    if ($env:SANTISZR_HF_ENDPOINT) {
+        $endpoints += [pscustomobject]@{
+            Name = "custom"
+            Url = $env:SANTISZR_HF_ENDPOINT
+        }
+    } elseif ($env:HF_ENDPOINT) {
+        $endpoints += [pscustomobject]@{
+            Name = "existing"
+            Url = $env:HF_ENDPOINT
+        }
+    } else {
+        $endpoints += [pscustomobject]@{
+            Name = "hf-mirror"
+            Url = "https://hf-mirror.com"
+        }
+    }
+
+    if ($endpoints.Url -notcontains "") {
+        $endpoints += [pscustomobject]@{
+            Name = "official"
+            Url = ""
+        }
+    }
+
+    return $endpoints
+}
+
+function Ensure-WhisperModel {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+
+    $modelName = if ($env:SANTISZR_WHISPER_MODEL_NAME) { $env:SANTISZR_WHISPER_MODEL_NAME } else { "small" }
+    $modelRoot = if ($env:SANTISZR_WHISPER_MODEL_DIR) { $env:SANTISZR_WHISPER_MODEL_DIR } else { Join-Path $ProjectRoot "models\whisper" }
+    $pythonExe = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $pythonExe)) {
+        $pythonExe = "python"
+    }
+
+    New-Item -ItemType Directory -Force -Path $modelRoot | Out-Null
+
+    if (Test-WhisperModelFiles -ModelRoot $modelRoot -ModelName $modelName) {
+        Write-Host "Whisper model is already available: $modelRoot ($modelName)."
+        return
+    }
+
+    $probe = @"
+import json
+import os
+import pathlib
+
+from faster_whisper.utils import download_model
+
+model_name = os.environ.get("SANTISZR_WHISPER_MODEL_NAME", "small").strip() or "small"
+model_root = pathlib.Path(os.environ["SANTISZR_WHISPER_MODEL_DIR"]).expanduser().resolve()
+output_dir = model_root / model_name
+model_root.mkdir(parents=True, exist_ok=True)
+path = download_model(model_name, output_dir=str(output_dir), cache_dir=str(model_root))
+print(json.dumps({"ok": True, "path": str(path)}))
+"@
+
+    $oldWhisperModelDir = $env:SANTISZR_WHISPER_MODEL_DIR
+    $oldWhisperModelName = $env:SANTISZR_WHISPER_MODEL_NAME
+    $oldHfEndpoint = $env:HF_ENDPOINT
+    $downloadErrors = @()
+
+    try {
+        $env:SANTISZR_WHISPER_MODEL_DIR = $modelRoot
+        $env:SANTISZR_WHISPER_MODEL_NAME = $modelName
+
+        foreach ($endpoint in (Get-HuggingFaceDownloadEndpoints)) {
+            if ($endpoint.Url) {
+                $env:HF_ENDPOINT = $endpoint.Url
+                Write-Host "Downloading Whisper model $modelName from $($endpoint.Name): $($endpoint.Url)..."
+            } else {
+                Remove-Item Env:\HF_ENDPOINT -ErrorAction SilentlyContinue
+                Write-Host "Downloading Whisper model $modelName from official Hugging Face..."
+            }
+
+            $output = Invoke-PythonProbe -PythonExe $pythonExe -Probe $probe
+            if ($script:LastPythonProbeExitCode -eq 0 -and (Test-WhisperModelFiles -ModelRoot $modelRoot -ModelName $modelName)) {
+                $downloadPath = ""
+                try {
+                    $downloadPath = (($output | Select-Object -Last 1) | ConvertFrom-Json).path
+                } catch {
+                }
+                if ($downloadPath) {
+                    Write-Host "Whisper model verified: $downloadPath"
+                } else {
+                    Write-Host "Whisper model verified: $modelRoot ($modelName)."
+                }
+                return
+            }
+
+            $downloadErrors += "$($endpoint.Name): exit code $($script:LastPythonProbeExitCode)"
+            Write-Warning "Whisper model download from $($endpoint.Name) failed or produced incomplete files. Trying the next endpoint if available."
+        }
+    } finally {
+        if ($null -eq $oldWhisperModelDir) {
+            Remove-Item Env:\SANTISZR_WHISPER_MODEL_DIR -ErrorAction SilentlyContinue
+        } else {
+            $env:SANTISZR_WHISPER_MODEL_DIR = $oldWhisperModelDir
+        }
+        if ($null -eq $oldWhisperModelName) {
+            Remove-Item Env:\SANTISZR_WHISPER_MODEL_NAME -ErrorAction SilentlyContinue
+        } else {
+            $env:SANTISZR_WHISPER_MODEL_NAME = $oldWhisperModelName
+        }
+        if ($null -eq $oldHfEndpoint) {
+            Remove-Item Env:\HF_ENDPOINT -ErrorAction SilentlyContinue
+        } else {
+            $env:HF_ENDPOINT = $oldHfEndpoint
+        }
+    }
+
+    throw "Failed to download Whisper model $modelName into $modelRoot. Attempts: $($downloadErrors -join '; ')"
+}
+
 function Get-HelperTorchInfo {
     param([Parameter(Mandatory = $true)][string]$PythonExe)
 
@@ -1155,6 +1330,9 @@ try {
 
     if (-not $SkipProjectSetup) {
         Invoke-ProjectSetup -ProjectRoot $ProjectRoot -FrontendDir $FrontendDir
+        Invoke-Checked "Downloading Whisper model for ultimate clone" {
+            Ensure-WhisperModel -ProjectRoot $ProjectRoot
+        }
         Invoke-Checked "Checking helper PyTorch GPU compatibility" {
             Ensure-HelperPytorchRuntime -ProjectRoot $ProjectRoot -WheelIndex $PytorchWheelIndex
         }

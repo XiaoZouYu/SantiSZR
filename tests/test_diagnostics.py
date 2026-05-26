@@ -45,7 +45,8 @@ def test_diagnostics_reports_complete_voxcpm_runtime(tmp_path: Path, monkeypatch
     tuilionnx_dir = settings.models.tuilionnx_model_dir
     assert whisper_dir is not None
     assert tuilionnx_dir is not None
-    whisper_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt"):
+        _touch(whisper_dir / "small" / name)
     tuilionnx_dir.mkdir(parents=True, exist_ok=True)
 
     _touch(tmp_path / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe")
@@ -71,6 +72,18 @@ def test_diagnostics_reports_complete_voxcpm_runtime(tmp_path: Path, monkeypatch
     report = format_diagnostic_report(checks)
     assert "✅ VoxCPM2 模型完整" in report
     assert "⚠ 发布功能未内置" in report
+
+
+def test_diagnostics_warns_when_whisper_model_is_incomplete(tmp_path: Path) -> None:
+    settings = _build_settings(tmp_path)
+    whisper_dir = settings.models.whisper_model_dir
+    assert whisper_dir is not None
+    whisper_dir.mkdir(parents=True, exist_ok=True)
+
+    checks = run_startup_diagnostics(settings, project_root=tmp_path)
+    by_name = {item.name: item for item in checks}
+
+    assert by_name["Whisper Model"].status == "warning"
 
 
 def test_diagnostics_reports_incomplete_voxcpm_model(tmp_path: Path, monkeypatch) -> None:

@@ -15,6 +15,7 @@ from santiszr.infra.media.ffmpeg import FFmpegAdapter
 
 
 _AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
+_WHISPER_REQUIRED_FILES = ("config.json", "model.bin", "tokenizer.json")
 
 
 class WhisperTranscriber:
@@ -134,10 +135,59 @@ class WhisperTranscriber:
     def _resolve_model_source(self, *, device: str) -> str:
         if self.model_dir:
             self.model_dir.mkdir(parents=True, exist_ok=True)
-            local_model_dir = self.model_dir / self.model_name
-            if local_model_dir.exists():
+            local_model_dir = self._find_local_model_dir()
+            if local_model_dir is not None:
                 return str(local_model_dir)
-        return self.model_name
+        raise RuntimeError(
+            f"Whisper model '{self.model_name}' is not installed under {self.model_dir}. "
+            "Run install-windows-prereqs.bat to download the model before using ultimate clone."
+        )
+
+    def _find_local_model_dir(self) -> Path | None:
+        if self.model_dir is None:
+            return None
+
+        direct_dir = self.model_dir / self.model_name
+        if self._is_model_dir_complete(direct_dir):
+            return direct_dir
+
+        repo_id = self._model_repo_id()
+        cache_dir = self.model_dir / f"models--{repo_id.replace('/', '--')}"
+        ref_path = cache_dir / "refs" / "main"
+        if ref_path.is_file():
+            try:
+                snapshot_dir = cache_dir / "snapshots" / ref_path.read_text(encoding="utf-8").strip()
+                if self._is_model_dir_complete(snapshot_dir):
+                    return snapshot_dir
+            except OSError:
+                pass
+
+        snapshots_dir = cache_dir / "snapshots"
+        if snapshots_dir.exists():
+            candidates = sorted(
+                (path for path in snapshots_dir.iterdir() if path.is_dir()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            for candidate in candidates:
+                if self._is_model_dir_complete(candidate):
+                    return candidate
+        return None
+
+    def _model_repo_id(self) -> str:
+        if "/" in self.model_name:
+            return self.model_name
+        if self.model_name.startswith("distil-"):
+            return f"Systran/faster-{self.model_name}"
+        return f"Systran/faster-whisper-{self.model_name}"
+
+    @staticmethod
+    def _is_model_dir_complete(path: Path) -> bool:
+        if not path.exists() or not path.is_dir():
+            return False
+        if not all((path / name).is_file() for name in _WHISPER_REQUIRED_FILES):
+            return False
+        return any(path.glob("vocabulary.*"))
 
     def _cuda_runtime_ready(self) -> bool:
         try:

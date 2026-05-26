@@ -202,12 +202,49 @@ def _check_whisper_model(settings: AppSettings) -> DiagnosticCheck:
             message="Whisper 模型目录不存在",
             detail=str(model_dir),
         )
+    if not _has_whisper_model_files(model_dir, "small"):
+        return DiagnosticCheck(
+            name="Whisper Model",
+            status="warning",
+            message="Whisper 模型文件不完整",
+            detail=f"{model_dir} | 请运行 install-windows-prereqs.bat 预下载 faster-whisper-small",
+        )
     return DiagnosticCheck(
         name="Whisper Model",
         status="ok",
         message="Whisper 模型目录可用",
         detail=str(model_dir),
     )
+
+
+def _has_whisper_model_files(model_dir: Path, model_name: str) -> bool:
+    required = ("config.json", "model.bin", "tokenizer.json")
+
+    def complete(path: Path) -> bool:
+        return (
+            path.exists()
+            and path.is_dir()
+            and all((path / name).is_file() for name in required)
+            and any(path.glob("vocabulary.*"))
+        )
+
+    direct_dir = model_dir / model_name
+    if complete(direct_dir):
+        return True
+
+    cache_dir = model_dir / f"models--Systran--faster-whisper-{model_name}"
+    ref_path = cache_dir / "refs" / "main"
+    if ref_path.is_file():
+        try:
+            if complete(cache_dir / "snapshots" / ref_path.read_text(encoding="utf-8").strip()):
+                return True
+        except OSError:
+            pass
+
+    snapshots_dir = cache_dir / "snapshots"
+    if snapshots_dir.exists():
+        return any(complete(candidate) for candidate in snapshots_dir.iterdir() if candidate.is_dir())
+    return False
 
 
 def _check_tuilionnx_model(settings: AppSettings) -> DiagnosticCheck:
