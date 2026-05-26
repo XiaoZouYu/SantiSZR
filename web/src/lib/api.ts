@@ -30,6 +30,56 @@ export class ApiError extends Error {
   }
 }
 
+function stringFromUnknown(value: unknown): string {
+  return typeof value === "string" ? value.trim() : ""
+}
+
+function messageFromDetail(detail: unknown): string {
+  const direct = stringFromUnknown(detail)
+  if (direct) return direct
+
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => {
+        if (!item || typeof item !== "object") return stringFromUnknown(item)
+        const record = item as Record<string, unknown>
+        const message = stringFromUnknown(record.msg) || stringFromUnknown(record.message) || stringFromUnknown(record.detail)
+        if (!message) return ""
+        const loc = Array.isArray(record.loc) ? record.loc.map(String).join(".") : stringFromUnknown(record.loc)
+        return loc ? `${loc}: ${message}` : message
+      })
+      .filter(Boolean)
+    return messages.join("; ")
+  }
+
+  if (detail && typeof detail === "object") {
+    const record = detail as Record<string, unknown>
+    return (
+      stringFromUnknown(record.message) ||
+      stringFromUnknown(record.detail) ||
+      stringFromUnknown(record.error)
+    )
+  }
+
+  return ""
+}
+
+function messageFromPayload(payload: unknown, fallback: string): string {
+  const direct = stringFromUnknown(payload)
+  if (direct) return direct
+
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>
+    const message =
+      stringFromUnknown(record.message) ||
+      messageFromDetail(record.detail) ||
+      messageFromDetail(record.error)
+    if (message) return message
+  }
+
+  return fallback
+}
+
 function joinUrl(baseUrl: string, path: string) {
   return new URL(path.startsWith("/") ? path : `/${path}`, baseUrl).toString()
 }
@@ -42,10 +92,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
       : await response.text().catch(() => "")
 
   if (!response.ok) {
-    const message =
-      typeof payload === "string"
-        ? payload || response.statusText
-        : (payload as Record<string, unknown> | null)?.message?.toString() || response.statusText
+    const message = messageFromPayload(payload, response.statusText)
     throw new ApiError(message, response.status, payload)
   }
 

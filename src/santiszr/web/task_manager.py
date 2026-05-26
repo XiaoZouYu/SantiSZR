@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from santiszr.app import AppContext
+from santiszr.core.gpu_memory import VideoMemoryDecision, evaluate_tts_release_for_video, is_cuda_oom_error
 from santiszr.domain.schemas.audio import RewriteRequest, RewriteResult, TTSRequest
 from santiszr.domain.schemas.avatar import AvatarRequest
 from santiszr.domain.schemas.common import ErrorInfo
@@ -230,7 +231,7 @@ class WebTaskManager:
             return services.subtitle.generate(SubtitleRequest.model_validate(payload))
 
         if task.kind is WebTaskKind.avatar:
-            return services.avatar.render(AvatarRequest.model_validate(payload))
+            return self._render_avatar(task, AvatarRequest.model_validate(payload))
 
         if task.kind is WebTaskKind.workflow:
             return services.workflow.generate_video(
@@ -248,6 +249,47 @@ class WebTaskManager:
             return services.publish.publish_batch(PublishBatchRequest.model_validate(payload))
 
         raise ValueError(f"Unsupported task kind: {task.kind.value}")
+
+    def _render_avatar(self, task: _TaskRecord, request: AvatarRequest) -> BaseModel:
+        services = self.context.services
+        self._prepare_tts_for_video_render(task)
+        result = services.avatar.render(request)
+        if not bool(getattr(result, "success", True)) and self._avatar_result_is_cuda_oom(result):
+            self._release_tts_resources(
+                task,
+                "Avatar rendering hit CUDA memory pressure. Released the TTS GPU model and retrying once.",
+            )
+            result = services.avatar.render(request)
+        return result
+
+    def _prepare_tts_for_video_render(self, task: _TaskRecord) -> bool:
+        decision = evaluate_tts_release_for_video()
+        if not decision.should_release:
+            return False
+        return self._release_tts_resources(task, self._video_memory_release_message(decision))
+
+    def _release_tts_resources(self, task: _TaskRecord, message: str) -> bool:
+        release = getattr(self.context.services.tts, "release_resources", None)
+        if not callable(release):
+            self._progress(task, "avatar", max(task.progress, 0.04), "TTS service cannot release GPU resources.")
+            return False
+        self._progress(task, "avatar", max(task.progress, 0.04), message)
+        release()
+        return True
+
+    def _avatar_result_is_cuda_oom(self, result: BaseModel) -> bool:
+        error = getattr(result, "error", None)
+        message = getattr(error, "message", None)
+        return is_cuda_oom_error(message)
+
+    def _video_memory_release_message(self, decision: VideoMemoryDecision) -> str:
+        snapshot = decision.snapshot
+        if snapshot is None:
+            return "Releasing the TTS GPU model before avatar rendering because GPU memory status is unavailable."
+        return (
+            "Releasing the TTS GPU model before avatar rendering "
+            f"({snapshot.free_mb}/{snapshot.total_mb} MB GPU memory free)."
+        )
 
     def _extract_and_rewrite(self, task: _TaskRecord, payload: dict[str, Any]) -> RewriteResult:
         workspace = str(payload["workspace"])

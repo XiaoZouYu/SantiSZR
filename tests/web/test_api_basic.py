@@ -11,6 +11,7 @@ from starlette.requests import Request
 from santiszr.app import AppContext, ServiceRegistry
 from santiszr.config.settings import AppSettings
 from santiszr.core.asset_library import MediaLibrary
+from santiszr.core.gpu_memory import CUDAMemorySnapshot, VideoMemoryDecision
 from santiszr.domain.schemas.audio import RewriteResult, TTSResult
 from santiszr.domain.schemas.avatar import AvatarResult
 from santiszr.domain.schemas.common import ErrorInfo
@@ -40,11 +41,14 @@ class FakeRewriteService:
 
 
 class FakeTTSService:
+    def __init__(self) -> None:
+        self.release_calls = 0
+
     def synthesize(self, request):  # noqa: ANN001
         return TTSResult(success=False, error=ErrorInfo(code="not_used", message="not used"))
 
     def release_resources(self) -> None:
-        return None
+        self.release_calls += 1
 
 
 class FakeSubtitleService:
@@ -81,6 +85,12 @@ class FakeTranscriber:
     def transcribe(self, source: str) -> str:
         self.calls.append(source)
         return self.transcript
+
+
+class FailingTranscriber(FakeTranscriber):
+    def transcribe(self, source: str) -> str:
+        self.calls.append(source)
+        raise RuntimeError("transcriber unavailable")
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -328,6 +338,50 @@ def test_reference_audio_transcript_uses_memory_cache(tmp_path: Path) -> None:
     assert transcriber.calls == [str(reference_audio.resolve())]
 
 
+def test_reference_audio_transcript_rejects_missing_file(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/reference-audio/transcript",
+        json={"reference_audio_path": str(tmp_path / "workspace" / "missing.wav")},
+    )
+
+    assert response.status_code == 404
+    assert "missing.wav" in response.json()["detail"]
+
+
+def test_reference_audio_transcript_rejects_empty_transcript(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    context = _context_from_client(client)
+    context.services.content.transcriber = FakeTranscriber("")
+    reference_audio = tmp_path / "workspace" / "reference.wav"
+    reference_audio.write_bytes(b"fake audio bytes")
+
+    response = client.post(
+        "/api/reference-audio/transcript",
+        json={"reference_audio_path": str(reference_audio)},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]
+
+
+def test_reference_audio_transcript_returns_transcriber_error_detail(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    context = _context_from_client(client)
+    context.services.content.transcriber = FailingTranscriber()
+    reference_audio = tmp_path / "workspace" / "reference.wav"
+    reference_audio.write_bytes(b"fake audio bytes")
+
+    response = client.post(
+        "/api/reference-audio/transcript",
+        json={"reference_audio_path": str(reference_audio)},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "transcriber unavailable"
+
+
 def test_avatar_task_result_contains_nested_video_path(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -345,6 +399,35 @@ def test_avatar_task_result_contains_nested_video_path(tmp_path: Path) -> None:
     task = _wait_for_task(client, response.json()["task_id"])
     assert task["status"] == "succeeded"
     assert task["result"]["avatar"]["video_path"] == "D:/tmp/avatar.mp4"
+
+
+def test_avatar_task_releases_tts_gpu_memory_when_memory_is_tight(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    from santiszr.web import task_manager as task_manager_module
+
+    monkeypatch.setattr(
+        task_manager_module,
+        "evaluate_tts_release_for_video",
+        lambda: VideoMemoryDecision(True, "low memory", CUDAMemorySnapshot(free_mb=512, total_mb=8192)),
+    )
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/tasks/avatar",
+        json={
+            "audio_path": "D:/tmp/audio.wav",
+            "model_id": "uploaded-avatar",
+            "reference_video_path": "D:/tmp/reference.mp4",
+            "workspace": str(tmp_path / "workspace"),
+        },
+    )
+
+    assert response.status_code == 202
+    task = _wait_for_task(client, response.json()["task_id"])
+    context = _context_from_client(client)
+
+    assert task["status"] == "succeeded"
+    assert context.services.tts.release_calls == 1
+    assert any("Releasing the TTS GPU model" in item for item in task["logs"])
 
 
 def test_sse_event_contains_frontend_alias_fields(tmp_path: Path) -> None:

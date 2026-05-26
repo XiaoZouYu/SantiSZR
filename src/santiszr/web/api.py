@@ -517,7 +517,7 @@ def _resolve_reference_audio_transcript(context: AppContext, audio_path: Path) -
 
     transcript = str(transcriber.transcribe(str(audio_path)) or "").strip()
     if not transcript:
-        raise RuntimeError("参考音频文字识别为空，无法启用极致克隆。")
+        raise ValueError("参考音频文字识别为空，无法启用极致克隆。")
 
     context.state.reference_transcript_cache[cache_key] = transcript
     return transcript, False
