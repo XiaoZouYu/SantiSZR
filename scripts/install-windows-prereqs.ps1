@@ -77,6 +77,27 @@ function Invoke-Checked {
     & $Action
 }
 
+function Invoke-PythonProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$PythonExe,
+        [Parameter(Mandatory = $true)][string]$Probe
+    )
+
+    $previousNativeErrorPreference = $null
+    $hasNativeErrorPreference = Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
+    if ($hasNativeErrorPreference) {
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+    try {
+        return & $PythonExe -c $Probe 2>$null
+    } finally {
+        if ($hasNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
+}
+
 function Install-WingetPackage {
     param(
         [Parameter(Mandatory = $true)][string]$Id,
@@ -364,7 +385,7 @@ except Exception as exc:
     print(json.dumps({'ok': False, 'error': str(exc)}))
 "@
 
-    $output = & $PythonExe -c $probe 2>$null
+    $output = Invoke-PythonProbe -PythonExe $PythonExe -Probe $probe
     if ($LASTEXITCODE -ne 0 -or -not $output) {
         return [pscustomobject]@{
             Ok = $false
@@ -420,7 +441,7 @@ except Exception as exc:
     print(json.dumps({'ok': False, 'error': str(exc)}))
 "@
 
-    $output = & $PythonExe -c $probe 2>$null
+    $output = Invoke-PythonProbe -PythonExe $PythonExe -Probe $probe
     if ($LASTEXITCODE -ne 0 -or -not $output) {
         return [pscustomobject]@{
             Ok = $false
@@ -479,7 +500,7 @@ except Exception as exc:
     print(json.dumps({'ok': False, 'error': str(exc)}))
 "@
 
-    $output = & $PythonExe -c $probe 2>$null
+    $output = Invoke-PythonProbe -PythonExe $PythonExe -Probe $probe
     if ($LASTEXITCODE -ne 0 -or -not $output) {
         return [pscustomobject]@{
             Ok = $false
@@ -622,7 +643,7 @@ except Exception as exc:
     print(json.dumps({'ok': False, 'error': str(exc)}))
 "@
 
-    $output = & $PythonExe -c $probe 2>$null
+    $output = Invoke-PythonProbe -PythonExe $PythonExe -Probe $probe
     if ($LASTEXITCODE -ne 0 -or -not $output) {
         return [pscustomobject]@{
             Ok = $false
@@ -957,9 +978,9 @@ function Ensure-HelperPytorchRuntime {
     }
 
     $helperPythons = @(
-        [pscustomobject]@{ Name = "VoxCPM"; Path = $voxcpmPython },
-        [pscustomobject]@{ Name = "TuiliONNX/CosyVoice"; Path = $tuilionnxPython },
-        [pscustomobject]@{ Name = "TuiliONNX/CosyVoice"; Path = $cosyvoicePython }
+        [pscustomobject]@{ Name = "VoxCPM"; Path = $voxcpmPython; RequiresOnnxRuntimeGpu = $false },
+        [pscustomobject]@{ Name = "TuiliONNX/CosyVoice"; Path = $tuilionnxPython; RequiresOnnxRuntimeGpu = $true },
+        [pscustomobject]@{ Name = "TuiliONNX/CosyVoice"; Path = $cosyvoicePython; RequiresOnnxRuntimeGpu = $true }
     )
 
     $seen = @{}
@@ -978,7 +999,9 @@ function Ensure-HelperPytorchRuntime {
         if (Test-HelperTorchMatches -TorchInfo $torchInfo -WheelIndex $WheelIndex) {
             Write-Host "$($helper.Name) helper PyTorch is already compatible: torch $($torchInfo.Version), CUDA $($torchInfo.Cuda)."
             Ensure-HelperNumpyRuntime -HelperName $helper.Name -PythonExe $helper.Path
-            Ensure-HelperOnnxRuntimeGpu -ProjectRoot $ProjectRoot -HelperName $helper.Name -PythonExe $helper.Path -WheelIndex $WheelIndex
+            if ($helper.RequiresOnnxRuntimeGpu) {
+                Ensure-HelperOnnxRuntimeGpu -ProjectRoot $ProjectRoot -HelperName $helper.Name -PythonExe $helper.Path -WheelIndex $WheelIndex
+            }
             continue
         }
 
@@ -1014,7 +1037,9 @@ function Ensure-HelperPytorchRuntime {
         }
         Write-Host "$($helper.Name) helper PyTorch verified: torch $($updatedInfo.Version), CUDA $($updatedInfo.Cuda), arch=$($updatedInfo.Arch -join ',')."
         Ensure-HelperNumpyRuntime -HelperName $helper.Name -PythonExe $helper.Path
-        Ensure-HelperOnnxRuntimeGpu -ProjectRoot $ProjectRoot -HelperName $helper.Name -PythonExe $helper.Path -WheelIndex $WheelIndex
+        if ($helper.RequiresOnnxRuntimeGpu) {
+            Ensure-HelperOnnxRuntimeGpu -ProjectRoot $ProjectRoot -HelperName $helper.Name -PythonExe $helper.Path -WheelIndex $WheelIndex
+        }
     }
 }
 
