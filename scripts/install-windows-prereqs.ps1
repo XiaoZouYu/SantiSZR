@@ -321,6 +321,28 @@ function Get-PytorchInstallIndexes {
     return $indexes
 }
 
+function Get-PypiInstallIndexes {
+    $indexes = @()
+    if ($env:SANTISZR_PYPI_INDEX_URL) {
+        $indexes += [pscustomobject]@{
+            Name = "custom"
+            Url = $env:SANTISZR_PYPI_INDEX_URL
+        }
+    } else {
+        $indexes += [pscustomobject]@{
+            Name = "aliyun"
+            Url = "https://mirrors.aliyun.com/pypi/simple"
+        }
+    }
+
+    $indexes += [pscustomobject]@{
+        Name = "official"
+        Url = "https://pypi.org/simple"
+    }
+
+    return $indexes
+}
+
 function Get-HelperTorchInfo {
     param([Parameter(Mandatory = $true)][string]$PythonExe)
 
@@ -371,6 +393,101 @@ except Exception as exc:
             Error = "Could not parse torch probe output: $output"
         }
     }
+}
+
+function Get-HelperNumpyInfo {
+    param([Parameter(Mandatory = $true)][string]$PythonExe)
+
+    if (-not (Test-Path -LiteralPath $PythonExe)) {
+        return $null
+    }
+
+    $probe = @"
+import json
+try:
+    import importlib.metadata as metadata
+    import numpy
+    module_version = getattr(numpy, '__version__', None)
+    try:
+        metadata_version = metadata.version('numpy')
+    except Exception as exc:
+        metadata_version = None
+        metadata_error = str(exc)
+    else:
+        metadata_error = None
+    print(json.dumps({'ok': bool(module_version and metadata_version), 'module_version': module_version, 'metadata_version': metadata_version, 'metadata_error': metadata_error}))
+except Exception as exc:
+    print(json.dumps({'ok': False, 'error': str(exc)}))
+"@
+
+    $output = & $PythonExe -c $probe 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $output) {
+        return [pscustomobject]@{
+            Ok = $false
+            ModuleVersion = $null
+            MetadataVersion = $null
+            Error = "Could not run numpy probe."
+        }
+    }
+
+    try {
+        $parsed = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        return [pscustomobject]@{
+            Ok = [bool]$parsed.ok
+            ModuleVersion = $parsed.module_version
+            MetadataVersion = $parsed.metadata_version
+            Error = if ($parsed.error) { $parsed.error } else { $parsed.metadata_error }
+        }
+    } catch {
+        return [pscustomobject]@{
+            Ok = $false
+            ModuleVersion = $null
+            MetadataVersion = $null
+            Error = "Could not parse numpy probe output: $output"
+        }
+    }
+}
+
+function Ensure-HelperNumpyRuntime {
+    param(
+        [Parameter(Mandatory = $true)][string]$HelperName,
+        [Parameter(Mandatory = $true)][string]$PythonExe
+    )
+
+    $numpyInfo = Get-HelperNumpyInfo -PythonExe $PythonExe
+    if ($numpyInfo -and $numpyInfo.Ok -and $numpyInfo.ModuleVersion -eq $numpyInfo.MetadataVersion) {
+        Write-Host "$HelperName helper numpy is healthy: $($numpyInfo.ModuleVersion)."
+        return
+    }
+
+    if ($numpyInfo) {
+        Write-Host "$HelperName helper numpy needs repair: module=$($numpyInfo.ModuleVersion), metadata=$($numpyInfo.MetadataVersion), error=$($numpyInfo.Error)."
+    } else {
+        Write-Host "$HelperName helper numpy needs repair: numpy probe did not run."
+    }
+
+    $installed = $false
+    $installErrors = @()
+    foreach ($index in (Get-PypiInstallIndexes)) {
+        Write-Host "Installing $HelperName helper numpy from $($index.Name) index: $($index.Url)..."
+        & $PythonExe -m pip install --upgrade --force-reinstall --no-cache-dir "numpy==1.26.4" --index-url $index.Url
+        if ($LASTEXITCODE -eq 0) {
+            $installed = $true
+            break
+        }
+        $installErrors += "$($index.Name): exit code $LASTEXITCODE"
+        Write-Warning "numpy install from $($index.Name) failed. Trying the next index if available."
+    }
+
+    if (-not $installed) {
+        throw "Failed to repair numpy for $HelperName helper Python: $PythonExe. Attempts: $($installErrors -join '; ')"
+    }
+
+    $repairedInfo = Get-HelperNumpyInfo -PythonExe $PythonExe
+    if (-not $repairedInfo -or -not $repairedInfo.Ok -or $repairedInfo.ModuleVersion -ne $repairedInfo.MetadataVersion) {
+        throw "$HelperName helper numpy repair completed, but verification failed. module=$($repairedInfo.ModuleVersion), metadata=$($repairedInfo.MetadataVersion), error=$($repairedInfo.Error)"
+    }
+    Write-Host "$HelperName helper numpy verified: $($repairedInfo.ModuleVersion)."
 }
 
 function Test-HelperTorchMatches {
@@ -471,6 +588,7 @@ function Ensure-HelperPytorchRuntime {
         $torchInfo = Get-HelperTorchInfo -PythonExe $helper.Path
         if (Test-HelperTorchMatches -TorchInfo $torchInfo -WheelIndex $WheelIndex) {
             Write-Host "$($helper.Name) helper PyTorch is already compatible: torch $($torchInfo.Version), CUDA $($torchInfo.Cuda)."
+            Ensure-HelperNumpyRuntime -HelperName $helper.Name -PythonExe $helper.Path
             continue
         }
 
@@ -502,6 +620,7 @@ function Ensure-HelperPytorchRuntime {
             throw "$($helper.Name) helper PyTorch install completed, but compatibility verification failed. torch=$($updatedInfo.Version), cuda=$($updatedInfo.Cuda), arch=$($updatedInfo.Arch -join ',')"
         }
         Write-Host "$($helper.Name) helper PyTorch verified: torch $($updatedInfo.Version), CUDA $($updatedInfo.Cuda), arch=$($updatedInfo.Arch -join ',')."
+        Ensure-HelperNumpyRuntime -HelperName $helper.Name -PythonExe $helper.Path
     }
 }
 
