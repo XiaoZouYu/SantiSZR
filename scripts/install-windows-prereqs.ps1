@@ -225,6 +225,67 @@ function Ensure-VcRuntime {
     }
 }
 
+function Get-WebView2RuntimeVersion {
+    $clientId = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    $registryPaths = @(
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$clientId",
+        "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$clientId",
+        "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$clientId"
+    )
+
+    foreach ($path in $registryPaths) {
+        try {
+            $item = Get-ItemProperty -Path $path -ErrorAction Stop
+            if ($item.pv) {
+                return [string]$item.pv
+            }
+        } catch {
+        }
+    }
+
+    return $null
+}
+
+function Ensure-WebView2Runtime {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+
+    $version = Get-WebView2RuntimeVersion
+    if ($version) {
+        Write-Host "Microsoft Edge WebView2 Runtime is already available: $version"
+        return
+    }
+
+    try {
+        Install-WingetPackage -Id "Microsoft.EdgeWebView2Runtime" -Name "Microsoft Edge WebView2 Runtime"
+    } catch {
+        Write-Warning "winget WebView2 Runtime install failed: $($_.Exception.Message)"
+    }
+
+    $version = Get-WebView2RuntimeVersion
+    if ($version) {
+        Write-Host "Microsoft Edge WebView2 Runtime verified: $version"
+        return
+    }
+
+    Write-Host "Installing Microsoft Edge WebView2 Runtime with the official Evergreen Bootstrapper..."
+    $installerDir = Join-Path $ProjectRoot "tools\installers"
+    New-Item -ItemType Directory -Force -Path $installerDir | Out-Null
+    $installer = Join-Path $installerDir "MicrosoftEdgeWebview2Setup.exe"
+    Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile $installer
+
+    $process = Start-Process -FilePath $installer -ArgumentList @("/silent", "/install") -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "Microsoft Edge WebView2 Runtime installer failed with exit code $($process.ExitCode). Installer: $installer"
+    }
+
+    $version = Get-WebView2RuntimeVersion
+    if (-not $version) {
+        throw "Microsoft Edge WebView2 Runtime installation completed, but verification failed."
+    }
+
+    Write-Host "Microsoft Edge WebView2 Runtime verified: $version"
+}
+
 function Get-NvidiaGpuInfo {
     Refresh-SessionPath
     $nvidiaSmi = Get-CommandPath "nvidia-smi.exe"
@@ -1320,6 +1381,7 @@ try {
     Invoke-Checked "Installing Node.js LTS" { Ensure-Node }
     Invoke-Checked "Installing uv" { Ensure-Uv }
     Invoke-Checked "Installing Visual C++ Runtime" { Ensure-VcRuntime }
+    Invoke-Checked "Installing Microsoft Edge WebView2 Runtime" { Ensure-WebView2Runtime -ProjectRoot $ProjectRoot }
     Test-GpuDriver
     $GpuInfo = Get-NvidiaGpuInfo
     $PytorchWheelIndex = Resolve-PytorchWheelIndex -GpuInfo $GpuInfo
