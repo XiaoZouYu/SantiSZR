@@ -633,25 +633,51 @@ class LstmSync():
             )
 
     def __face_detect(self, images):
-        faces = []
-        boxs = []
-        affine_matrixs = []
+        results = []
+        missing_indices = []
         for i in tqdm(range(0, len(images))):
             frame = cv2.cvtColor(images[i], cv2.COLOR_BGR2RGB)
             try:
                 face, box, affine_matrix = self.detect_face.affine_transform(frame)
                 face = rearrange(face.cpu().numpy(), "c h w -> h w c")
                 face = face[..., ::-1]  # to rgb
-                faces.append(face)
-                boxs.append(box)
-                affine_matrixs.append(affine_matrix)
+                results.append([face, box, affine_matrix, True])
             except Exception:
-                cv2.imwrite('temp/noface.jpg', images[i])
-                raise Exception("no face")
+                if not missing_indices:
+                    try:
+                        noface_dir = Path("temp")
+                        noface_dir.mkdir(parents=True, exist_ok=True)
+                        cv2.imwrite(str(noface_dir / "noface.jpg"), images[i])
+                    except Exception:
+                        pass
+                missing_indices.append(i)
+                results.append([None, None, None, False])
 
-        results = [[face, box, affine_matrix] for face, box, affine_matrix in
-                   zip(faces, boxs, affine_matrixs)]
-        return results
+        first_valid = next((item for item in results if item[3]), None)
+        if first_valid is None:
+            raise RuntimeError(
+                "No face detected in any reference frame. Check temp/noface.jpg and use a clearer front-facing reference video."
+            )
+
+        normalized_results = []
+        last_valid = None
+        for item in results:
+            if item[3]:
+                last_valid = item
+                normalized_results.append(item)
+                continue
+
+            fallback = last_valid or first_valid
+            normalized_results.append([fallback[0], fallback[1], fallback[2], False])
+
+        if missing_indices:
+            print(
+                "Face detection missed "
+                f"{len(missing_indices)}/{len(images)} reference frames; "
+                "those frames will be kept unchanged in the output video."
+            )
+
+        return normalized_results
 
     def __datagen(self, frames, mels):
         img_batch, mel_batch, frame_batch, coords_batch, affines_batch = [], [], [], [], []
@@ -662,12 +688,12 @@ class LstmSync():
             n_frames = len(frames)
             idx = i % n_frames
             frame_to_save = frames[idx].copy()
-            face, coords, affine_matrix = face_det_results[idx].copy()
+            face, coords, affine_matrix, has_face = face_det_results[idx]
             face = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
             img_batch.append(face)
             mel_batch.append(m)
             frame_batch.append(frame_to_save)
-            coords_batch.append(coords)
+            coords_batch.append(coords if has_face else None)
             affines_batch.append(affine_matrix)
 
             if len(img_batch) >= self.wav2lip_batch_size:
@@ -834,6 +860,9 @@ class LstmSync():
             pred = np.stack(g_frames, axis=0)
 
             for p, f, c, a in zip(pred, frames, coords, affines):
+                if c is None:
+                    out.write(f)
+                    continue
                 x1, y1, x2, y2 = c
                 height = int(y2 - y1)
                 width = int(x2 - x1)
