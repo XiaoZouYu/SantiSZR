@@ -29,6 +29,8 @@ class AvatarRequest(BaseModel):
     compress_inference: bool = False
     beautify_teeth: bool = False
     add_ai_watermark: bool = False
+    quality_preset: str = "clear"
+    max_reference_edge: int | None = 1080
 
 
 class AvatarResult(BaseModel):

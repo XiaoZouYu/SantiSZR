@@ -84,6 +84,7 @@ type AvatarSlice = {
   referenceVideoName: string
   baseVideoPath: string
   engine: string
+  qualityPreset: string
   resultVideoPath: string
   errorLog: string[]
 }
@@ -898,6 +899,7 @@ export function useDashboard() {
     referenceVideoName: "",
     baseVideoPath: "",
     engine: "tuilionnx",
+    qualityPreset: "clear",
     resultVideoPath: "",
     errorLog: [],
   })
@@ -1749,6 +1751,7 @@ export function useDashboard() {
     setReferenceVideoPath: (value: string) => setAvatar((prev) => ({ ...prev, referenceVideoPath: value })),
     setReferenceVideoName: (value: string) => setAvatar((prev) => ({ ...prev, referenceVideoName: value })),
     setEngine: (value: string) => setAvatar((prev) => ({ ...prev, engine: value })),
+    setQualityPreset: (value: string) => setAvatar((prev) => ({ ...prev, qualityPreset: value })),
     setResultVideoPath: (value: string) => setAvatar((prev) => ({ ...prev, resultVideoPath: value })),
     setErrorLog: (value: string[]) => setAvatar((prev) => ({ ...prev, errorLog: value })),
   }

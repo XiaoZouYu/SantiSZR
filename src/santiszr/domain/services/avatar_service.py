@@ -49,6 +49,8 @@ class AvatarService:
                 compress_inference=request.compress_inference,
                 beautify_teeth=request.beautify_teeth,
                 add_ai_watermark=request.add_ai_watermark,
+                quality_preset=request.quality_preset,
+                max_reference_edge=request.max_reference_edge,
             )
             engine_used = "tuilionnx-lipsync"
             duration = self.ffmpeg.probe_duration(video_path)

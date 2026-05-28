@@ -22,7 +22,7 @@ from transformers import (
 __all__ = ["LstmSync"]
 __dir__ = []
 
-DEFAULT_MAX_REFERENCE_EDGE = 720
+DEFAULT_MAX_REFERENCE_EDGE = 1080
 DEFAULT_OPENCV_THREADS = 2
 DEFAULT_INSIGHTFACE_DETECT_SIZE = 512
 DEFAULT_FACE_DETECT_THRESHOLD = 0.5
@@ -31,6 +31,12 @@ DEFAULT_FACE_MIN_WIDTH = 50
 DEFAULT_FACE_MIN_HEIGHT = 80
 DEFAULT_FACE_FALLBACK_MIN_WIDTH = 30
 DEFAULT_FACE_FALLBACK_MIN_HEIGHT = 45
+DEFAULT_VIDEO_QUALITY_PRESET = "clear"
+VIDEO_QUALITY_PROFILES = {
+    "speed": {"cq": "23", "bitrate": "4M", "maxrate": "6M", "bufsize": "8M", "preset": "p4"},
+    "clear": {"cq": "19", "bitrate": "8M", "maxrate": "12M", "bufsize": "16M", "preset": "p5"},
+    "hd": {"cq": "17", "bitrate": "12M", "maxrate": "18M", "bufsize": "24M", "preset": "p5"},
+}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -53,6 +59,14 @@ def _env_float(name: str, default: float) -> float:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _env_text(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    value = value.strip()
+    return value or default
 
 
 def _configure_opencv_threads() -> int:
@@ -700,6 +714,109 @@ class LstmSync():
                 f"{completed.stderr.strip()}"
             )
 
+    def _video_quality_args(self, quality_preset: str | None = None) -> list[str]:
+        preset = (quality_preset or _env_text("SANTISZR_TUILIONNX_VIDEO_QUALITY", DEFAULT_VIDEO_QUALITY_PRESET)).strip().lower()
+        profile = VIDEO_QUALITY_PROFILES.get(preset, VIDEO_QUALITY_PROFILES[DEFAULT_VIDEO_QUALITY_PRESET])
+        cq = _env_text("SANTISZR_TUILIONNX_VIDEO_CQ", profile["cq"])
+        bitrate = _env_text("SANTISZR_TUILIONNX_VIDEO_BITRATE", profile["bitrate"])
+        maxrate = _env_text("SANTISZR_TUILIONNX_VIDEO_MAXRATE", profile["maxrate"])
+        bufsize = _env_text("SANTISZR_TUILIONNX_VIDEO_BUFSIZE", profile["bufsize"])
+        preset_value = _env_text("SANTISZR_TUILIONNX_VIDEO_PRESET", profile["preset"])
+
+        if "nvenc" in self.video_encoder.lower():
+            return [
+                "-preset",
+                preset_value,
+                "-rc",
+                "vbr",
+                "-cq",
+                cq,
+                "-b:v",
+                bitrate,
+                "-maxrate",
+                maxrate,
+                "-bufsize",
+                bufsize,
+            ]
+        return ["-b:v", bitrate, "-maxrate", maxrate, "-bufsize", bufsize]
+
+    def _open_video_pipe(
+        self,
+        *,
+        frame_width: int,
+        frame_height: int,
+        fps: float,
+        audio_temp_path: str,
+        video_out_path: str,
+        quality_preset: str | None,
+    ) -> tuple[subprocess.Popen[bytes], list[str]]:
+        command = [
+            self.ffmpeg_path,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "bgr24",
+            "-s",
+            f"{frame_width}x{frame_height}",
+            "-r",
+            f"{fps:.6f}",
+            "-i",
+            "-",
+            "-i",
+            audio_temp_path,
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            self.video_encoder,
+            *self._video_quality_args(quality_preset),
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            video_out_path,
+        ]
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        return process, command
+
+    def _write_video_pipe_frame(self, process: subprocess.Popen[bytes], frame: np.ndarray) -> None:
+        if process.stdin is None:
+            raise RuntimeError("FFmpeg raw video pipe is not writable.")
+        if frame.dtype != np.uint8:
+            frame = np.clip(frame, 0, 255).astype(np.uint8)
+        contiguous = np.ascontiguousarray(frame)
+        process.stdin.write(contiguous.tobytes())
+
+    def _close_video_pipe(self, process: subprocess.Popen[bytes], command: list[str]) -> None:
+        if process.stdin is not None:
+            process.stdin.close()
+            process.stdin = None
+        _, stderr = process.communicate()
+        if process.returncode != 0:
+            detail = stderr.decode("utf-8", errors="ignore").strip()
+            raise RuntimeError(
+                f"FFmpeg raw video pipe failed with exit code {process.returncode}: {' '.join(command)}\n{detail}"
+            )
+
     def __face_detect(self, images):
         results = []
         missing_indices = []
@@ -788,7 +905,18 @@ class LstmSync():
         return ['run']
 
 
-    def run(self, video_path, video_fps25_path, video_temp_path, audio_path, audio_temp_path, video_out_path, compress_inference_check_box=None):
+    def run(
+            self,
+            video_path,
+            video_fps25_path,
+            video_temp_path,
+            audio_path,
+            audio_temp_path,
+            video_out_path,
+            compress_inference_check_box=None,
+            quality_preset: str | None = None,
+            max_reference_edge: int | None = None,
+    ):
         self.assert_gpu_runtime()
         if compress_inference_check_box is not None:
             self.compress_inference_check_box = compress_inference_check_box
@@ -799,7 +927,6 @@ class LstmSync():
         audio_path = str(Path(audio_path).expanduser().resolve())
         audio_temp_path = str(Path(audio_temp_path).expanduser().resolve())
         video_out_path = str(Path(video_out_path).expanduser().resolve())
-        video_temp_path = video_temp_path + ".avi"
 
         if get_video_fps(video_path) != 25:
             print("Converting video to 25 fps...")
@@ -814,8 +941,11 @@ class LstmSync():
                     "25",
                     "-c:v",
                     self.video_encoder,
+                    *self._video_quality_args(quality_preset),
                     "-pix_fmt",
                     "yuv420p",
+                    "-movflags",
+                    "+faststart",
                     video_fps25_path,
                 ]
             )
@@ -825,10 +955,13 @@ class LstmSync():
         video_stream = cv2.VideoCapture(video_fps25_path)
         fps = video_stream.get(cv2.CAP_PROP_FPS) or 25.0
         print('Reading video frames...')
-        max_reference_edge = _env_int(
-            "SANTISZR_TUILIONNX_MAX_REFERENCE_EDGE",
-            DEFAULT_MAX_REFERENCE_EDGE,
-        )
+        if max_reference_edge is None:
+            max_reference_edge = _env_int(
+                "SANTISZR_TUILIONNX_MAX_REFERENCE_EDGE",
+                DEFAULT_MAX_REFERENCE_EDGE,
+            )
+        else:
+            max_reference_edge = int(max_reference_edge)
         full_frames = []
         try:
             while 1:
@@ -893,95 +1026,81 @@ class LstmSync():
         face_det_results = self.__datagen(full_frames, rep_chunks)
         
         frame_h, frame_w = full_frames[0].shape[:-1]
-        out = cv2.VideoWriter(video_temp_path, cv2.VideoWriter_fourcc(*'DIVX'), fps, (frame_w, frame_h))
+        out, out_command = self._open_video_pipe(
+            frame_width=frame_w,
+            frame_height=frame_h,
+            fps=fps,
+            audio_temp_path=audio_temp_path,
+            video_out_path=video_out_path,
+            quality_preset=quality_preset,
+        )
         wav2lip_batch_size = self.wav2lip_batch_size
+        try:
+            for i, (img_batch, mel_batch, frames, coords, affines) in enumerate(tqdm(face_det_results,
+                                                                                     total=int(
+                                                                                         np.ceil(
+                                                                                             float(
+                                                                                                 len(full_frames)) / wav2lip_batch_size)))):
 
-        for i, (img_batch, mel_batch, frames, coords, affines) in enumerate(tqdm(face_det_results,
-                                                                                 total=int(
-                                                                                     np.ceil(
-                                                                                         float(
-                                                                                             len(full_frames)) / wav2lip_batch_size)))):
+                mel_batch = np.transpose(mel_batch, (0, 2, 1))
+                b = mel_batch.shape[0]
+                g_frames = []
+                for frame in range(b):
 
-            mel_batch = np.transpose(mel_batch, (0, 2, 1))
-            b = mel_batch.shape[0]
-            g_frames = []
-            for frame in range(b):
+                    if (i == 0 and frame == 0) or ((i * wav2lip_batch_size + frame + 1) % self.syncnet_T == 0):
+                        # 初始化时间步，使用动态检测的数据类型
+                        hn = np.zeros((2, 1, 576), dtype=self.model_dtype)
+                        cn = np.zeros((2, 1, 576), dtype=self.model_dtype)
 
-                if (i == 0 and frame == 0) or ((i * wav2lip_batch_size + frame + 1) % self.syncnet_T == 0):
-                    # 初始化时间步，使用动态检测的数据类型
-                    hn = np.zeros((2, 1, 576), dtype=self.model_dtype)
-                    cn = np.zeros((2, 1, 576), dtype=self.model_dtype)
+                    x_frame = img_batch[frame, :, :, :].astype(self.model_dtype)
+                    x_frame = np.expand_dims(x_frame, axis=0)
+                    indiv_frame = mel_batch[frame, :, :].astype(self.model_dtype)
+                    indiv_frame = np.expand_dims(indiv_frame, axis=0)
+                    g, hn, cn = self.ort_session.run(None, {
+                        self.input_names[0]: indiv_frame,
+                        self.input_names[1]: x_frame,
+                        self.input_names[2]: hn,
+                        self.input_names[3]: cn,
+                    })
 
-                x_frame = img_batch[frame, :, :, :].astype(self.model_dtype)
-                x_frame = np.expand_dims(x_frame, axis=0)
-                indiv_frame = mel_batch[frame, :, :].astype(self.model_dtype)
-                indiv_frame = np.expand_dims(indiv_frame, axis=0)
-                g, hn, cn = self.ort_session.run(None, {
-                    self.input_names[0]: indiv_frame,
-                    self.input_names[1]: x_frame,
-                    self.input_names[2]: hn,
-                    self.input_names[3]: cn,
-                })
+                    g_frames.append(g.squeeze().astype(np.float32))
 
-                g_frames.append(g.squeeze().astype(np.float32))
+                pred = np.stack(g_frames, axis=0)
 
-            pred = np.stack(g_frames, axis=0)
+                for p, f, c, a in zip(pred, frames, coords, affines):
+                    if c is None:
+                        self._write_video_pipe_frame(out, f)
+                        continue
+                    x1, y1, x2, y2 = c
+                    height = int(y2 - y1)
+                    width = int(x2 - x1)
+                    p = p[[2, 1, 0], :, :]
+                    p = _resize_prediction_tensor(torch.from_numpy(p).to(self.device), height, width)
+                    f = self.detect_face.restorer.restore_img(f, p, a, scale_h=self.scale_h, scale_w=self.scale_w)
+                    self._write_video_pipe_frame(out, f)
 
-            for p, f, c, a in zip(pred, frames, coords, affines):
-                if c is None:
-                    out.write(f)
-                    continue
-                x1, y1, x2, y2 = c
-                height = int(y2 - y1)
-                width = int(x2 - x1)
-                p = p[[2, 1, 0], :, :]
-                p = _resize_prediction_tensor(torch.from_numpy(p).to(self.device), height, width)
-                f = self.detect_face.restorer.restore_img(f, p, a, scale_h=self.scale_h, scale_w=self.scale_w)
-                out.write(f)
-            
-            # 定期清理内存，每处理10个批次清理一次
-            if (i + 1) % 10 == 0:
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                # 定期清理内存，每处理10个批次清理一次
+                if (i + 1) % 10 == 0:
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
-        if out is not None:
-            out.release()
+            self._close_video_pipe(out, out_command)
             out = None
+        except Exception:
+            if out is not None:
+                try:
+                    if out.stdin is not None:
+                        out.stdin.close()
+                except Exception:
+                    pass
+                out.kill()
+                out.wait()
+            raise
         del face_det_results
         del full_frames
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
-        try:
-            self._run_ffmpeg(
-                [
-                    self.ffmpeg_path,
-                    "-y",
-                    "-i",
-                    video_temp_path,
-                    "-i",
-                    audio_temp_path,
-                    "-c:v",
-                    self.video_encoder,
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "192k",
-                    "-ar",
-                    "44100",
-                    "-ac",
-                    "2",
-                    "-shortest",
-                    video_out_path,
-                ]
-            )
-        finally:
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
             
         return video_out_path

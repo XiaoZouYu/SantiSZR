@@ -63,6 +63,12 @@ const WORKFLOW_STEPS = [
 
 type WorkflowStepId = (typeof WORKFLOW_STEPS)[number]["id"]
 
+const AVATAR_QUALITY_PRESETS: Record<string, { batchSize: number; maxReferenceEdge: number; qualityPreset: string }> = {
+  speed: { batchSize: 4, maxReferenceEdge: 720, qualityPreset: "speed" },
+  clear: { batchSize: 4, maxReferenceEdge: 1080, qualityPreset: "clear" },
+  hd: { batchSize: 2, maxReferenceEdge: 0, qualityPreset: "hd" },
+}
+
 function workflowStepFromTask(kind?: string, stage?: string): WorkflowStepId {
   const text = `${kind ?? ""} ${stage ?? ""}`.toLowerCase()
   if (text.includes("publish") || text.includes("发布")) return "publish"
@@ -808,6 +814,7 @@ function App() {
                 referenceVideoName={dashboard.avatar.referenceVideoName}
                 referenceVideoAssets={dashboard.assets.video.filter((asset) => asset.category === "reference_video" || asset.kind === "reference_video" || asset.source === "reference/video")}
                 engine={dashboard.avatar.engine}
+                qualityPreset={dashboard.avatar.qualityPreset}
                 resultVideoPath={avatarGeneratedVideoPath}
                 errorLog={dashboard.avatar.errorLog}
                 busyGenerate={dashboard.isTaskBusy("avatar")}
@@ -816,11 +823,14 @@ function App() {
                 onReferenceVideoPathChange={dashboard.avatarActions.setReferenceVideoPath}
                 onReferenceVideoNameChange={dashboard.avatarActions.setReferenceVideoName}
                 onEngineChange={dashboard.avatarActions.setEngine}
+                onQualityPresetChange={dashboard.avatarActions.setQualityPreset}
                 onResultVideoPathChange={dashboard.avatarActions.setResultVideoPath}
                 onErrorLogChange={dashboard.avatarActions.setErrorLog}
                 onUpload={(file) => dashboard.uploadAsset("video", file)}
                 onGenerate={() => {
                   if (avatarDisabledReason) return Promise.resolve(null)
+                  const qualityPreset =
+                    AVATAR_QUALITY_PRESETS[dashboard.avatar.qualityPreset] ?? AVATAR_QUALITY_PRESETS.clear
                   return dashboard.submitTask("avatar", {
                     audio_path: avatarAudioPath,
                     model_id: "uploaded-avatar",
@@ -830,13 +840,15 @@ function App() {
                     subtitle_style: subtitleStylePayload,
                     reference_video_path: dashboard.avatar.referenceVideoPath,
                     background_video_path: null,
-                    batch_size: 4,
+                    batch_size: qualityPreset.batchSize,
                     sync_offset: 0,
                     scale_h: 1.6,
                     scale_w: 3.6,
                     compress_inference: false,
                     beautify_teeth: false,
                     add_ai_watermark: false,
+                    quality_preset: qualityPreset.qualityPreset,
+                    max_reference_edge: qualityPreset.maxReferenceEdge,
                   })
                 }}
                 fileUrl={dashboard.fileUrl}

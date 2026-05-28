@@ -15,6 +15,7 @@ type Props = {
   referenceVideoName: string
   referenceVideoAssets: AssetRecord[]
   engine: string
+  qualityPreset: string
   resultVideoPath: string
   errorLog: string[]
   busyGenerate: boolean
@@ -23,6 +24,7 @@ type Props = {
   onReferenceVideoPathChange: (value: string) => void
   onReferenceVideoNameChange: (value: string) => void
   onEngineChange: (value: string) => void
+  onQualityPresetChange: (value: string) => void
   onResultVideoPathChange: (value: string) => void
   onErrorLogChange: (value: string[]) => void
   onUpload: (file: File) => Promise<unknown>
@@ -116,7 +118,7 @@ export function AvatarSection(props: Props) {
             <div className="grid gap-2">
               <Label>参考视频</Label>
               <Select
-                value={props.referenceVideoPath || undefined}
+                value={props.referenceVideoPath}
                 onValueChange={(value) => {
                   const asset = props.referenceVideoAssets.find((item) => item.path === value)
                   props.onReferenceVideoPathChange(value)
@@ -171,20 +173,36 @@ export function AvatarSection(props: Props) {
               {latestResultPath ? <p className="truncate-path text-xs">位置: {latestResultPath}</p> : null}
             </div>
             <div className="grid gap-3">
-              <div className="grid gap-2">
-                <Label>引擎</Label>
-                <Select value={props.engine} onValueChange={props.onEngineChange}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="tuilionnx">TuiliONNX</SelectItem>
-                  </SelectContent>
-                </Select>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-2">
+                  <Label>引擎</Label>
+                  <Select value={props.engine} onValueChange={props.onEngineChange}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="tuilionnx">TuiliONNX</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <Label>质量预设</Label>
+                  <Select value={props.qualityPreset} onValueChange={props.onQualityPresetChange}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="speed">速度</SelectItem>
+                      <SelectItem value="clear">清晰</SelectItem>
+                      <SelectItem value="hd">高清</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <Badge variant="outline">音频: {pathBasename(props.audioPath || "未选择")}</Badge>
+              <Badge variant="outline">质量: {props.qualityPreset === "speed" ? "速度" : props.qualityPreset === "hd" ? "高清" : "清晰"}</Badge>
               <Badge variant="outline">字幕: 后处理模块</Badge>
             </div>
             <div className="grid min-h-[76px] content-start gap-2">

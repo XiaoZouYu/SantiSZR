@@ -63,6 +63,8 @@ class TuiliOnnxAdapter:
         compress_inference: bool = False,
         beautify_teeth: bool = False,
         add_ai_watermark: bool = False,
+        quality_preset: str = "clear",
+        max_reference_edge: int | None = 1080,
     ) -> tuple[Path, Path | None, list[str]]:
         del model_id
 
@@ -97,6 +99,8 @@ class TuiliOnnxAdapter:
             "compress_inference": bool(compress_inference),
             "beautify_teeth": bool(beautify_teeth),
             "add_ai_watermark": bool(add_ai_watermark),
+            "quality_preset": str(quality_preset or "clear"),
+            "max_reference_edge": max_reference_edge,
         }
         process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
         process.stdin.flush()

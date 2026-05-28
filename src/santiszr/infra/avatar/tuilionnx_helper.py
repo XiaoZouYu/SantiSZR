@@ -89,6 +89,15 @@ def _emit(payload: dict[str, object]) -> None:
     sys.stdout.flush()
 
 
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass(slots=True, frozen=True)
 class _RuntimeKey:
     beautify_teeth: bool
@@ -170,6 +179,8 @@ class AvatarRenderRuntime:
                 audio_temp_path=str(audio_temp_path),
                 video_out_path=str(core_output),
                 compress_inference_check_box=bool(request.get("compress_inference")),
+                quality_preset=str(request.get("quality_preset") or "clear"),
+                max_reference_edge=_optional_int(request.get("max_reference_edge")),
             )
             notes.append(f"Using uploaded reference video: {reference_video_path.name}")
             notes.append(f"Rendered lip-sync video with encoder {runtime.video_encoder}.")

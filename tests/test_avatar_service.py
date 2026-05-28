@@ -52,6 +52,8 @@ def test_avatar_service_renders_with_uploaded_reference_video(
             subtitle_style=SubtitleStyle(font_size=28, bottom_margin=84),
             reference_video_path=str(sample_video),
             overlay_text="avatar-test",
+            quality_preset="hd",
+            max_reference_edge=0,
         )
     )
 
@@ -64,6 +66,8 @@ def test_avatar_service_renders_with_uploaded_reference_video(
     assert adapter.render_calls[0]["background_video_path"] == str(sample_video)
     assert adapter.render_calls[0]["subtitle_style"].font_size == 28
     assert adapter.render_calls[0]["subtitle_style"].bottom_margin == 84
+    assert adapter.render_calls[0]["quality_preset"] == "hd"
+    assert adapter.render_calls[0]["max_reference_edge"] == 0
     assert Path(str(adapter.render_calls[0]["output_path"])).name == f"{sample_video.stem}_tuilionnx.mp4"
 
 
