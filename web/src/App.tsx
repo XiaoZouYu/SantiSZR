@@ -813,8 +813,8 @@ function App() {
                 referenceVideoPath={dashboard.avatar.referenceVideoPath}
                 referenceVideoName={dashboard.avatar.referenceVideoName}
                 referenceVideoAssets={dashboard.assets.video.filter((asset) => asset.category === "reference_video" || asset.kind === "reference_video" || asset.source === "reference/video")}
-                engine={dashboard.avatar.engine}
                 qualityPreset={dashboard.avatar.qualityPreset}
+                beautifyTeeth={dashboard.avatar.beautifyTeeth}
                 resultVideoPath={avatarGeneratedVideoPath}
                 errorLog={dashboard.avatar.errorLog}
                 busyGenerate={dashboard.isTaskBusy("avatar")}
@@ -822,8 +822,8 @@ function App() {
                 onAudioPathChange={dashboard.avatarActions.setAudioPath}
                 onReferenceVideoPathChange={dashboard.avatarActions.setReferenceVideoPath}
                 onReferenceVideoNameChange={dashboard.avatarActions.setReferenceVideoName}
-                onEngineChange={dashboard.avatarActions.setEngine}
                 onQualityPresetChange={dashboard.avatarActions.setQualityPreset}
+                onBeautifyTeethChange={dashboard.avatarActions.setBeautifyTeeth}
                 onResultVideoPathChange={dashboard.avatarActions.setResultVideoPath}
                 onErrorLogChange={dashboard.avatarActions.setErrorLog}
                 onUpload={(file) => dashboard.uploadAsset("video", file)}
@@ -845,7 +845,7 @@ function App() {
                     scale_h: 1.6,
                     scale_w: 3.6,
                     compress_inference: false,
-                    beautify_teeth: false,
+                    beautify_teeth: dashboard.avatar.beautifyTeeth,
                     add_ai_watermark: false,
                     quality_preset: qualityPreset.qualityPreset,
                     max_reference_edge: qualityPreset.maxReferenceEdge,

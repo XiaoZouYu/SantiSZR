@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react"
 import { Smartphone, Upload, Video } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { PanelShell, TokenBadge, VideoPreviewPanel } from "./common"
-import { assetPathFromUploadResponse, pathBasename } from "@/lib/utils"
+import { assetPathFromUploadResponse, cn, pathBasename } from "@/lib/utils"
 import type { AssetRecord, TaskRecord } from "@/types"
 
 type Props = {
@@ -14,8 +15,8 @@ type Props = {
   referenceVideoPath: string
   referenceVideoName: string
   referenceVideoAssets: AssetRecord[]
-  engine: string
   qualityPreset: string
+  beautifyTeeth: boolean
   resultVideoPath: string
   errorLog: string[]
   busyGenerate: boolean
@@ -23,8 +24,8 @@ type Props = {
   onAudioPathChange: (value: string) => void
   onReferenceVideoPathChange: (value: string) => void
   onReferenceVideoNameChange: (value: string) => void
-  onEngineChange: (value: string) => void
   onQualityPresetChange: (value: string) => void
+  onBeautifyTeethChange: (value: boolean) => void
   onResultVideoPathChange: (value: string) => void
   onErrorLogChange: (value: string[]) => void
   onUpload: (file: File) => Promise<unknown>
@@ -65,6 +66,9 @@ export function AvatarSection(props: Props) {
     props.resultVideoPath ||
     (latestTaskStatus === "succeeded" && typeof latestAvatarResult?.video_path === "string" ? latestAvatarResult.video_path : "")
   const previewPath = latestResultPath || props.referenceVideoPath
+  const qualityLabel = props.qualityPreset === "speed" ? "速度" : props.qualityPreset === "hd" ? "高清" : "清晰"
+  const taskMessage = typeof props.latestTask?.message === "string" ? props.latestTask.message.trim() : ""
+  const genericTaskMessage = /^task completed\.?$/i.test(taskMessage) || /^completed\.?$/i.test(taskMessage)
 
   useEffect(() => {
     setMediaError(false)
@@ -94,13 +98,16 @@ export function AvatarSection(props: Props) {
               : "等待生成"
   const statusMessage =
     props.latestTask?.error?.message ||
-    props.latestTask?.message ||
     (latestTaskStatus === "succeeded"
       ? "数字人视频已生成完成，右侧预览已切换到生成结果。"
       : latestTaskStatus === "failed"
-        ? "数字人视频生成失败。"
+        ? taskMessage && !genericTaskMessage
+          ? taskMessage
+          : "数字人视频生成失败。"
         : props.busyGenerate || latestTaskStatus === "running" || latestTaskStatus === "pending" || latestTaskStatus === "queued"
-          ? "正在生成数字人视频，请稍等。"
+          ? taskMessage && !genericTaskMessage
+            ? taskMessage
+            : "正在生成数字人视频，请稍等。"
           : latestResultPath
             ? "右侧正在预览生成结果。"
             : "点击生成后，这里会显示结果和输出位置。")
@@ -162,31 +169,43 @@ export function AvatarSection(props: Props) {
             </Button>
           </div>
 
-          <div className="grid content-start gap-3 rounded-md border border-border bg-background/55 p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <TokenBadge tone={props.referenceVideoPath ? "success" : "warning"}>{props.referenceVideoPath ? "参考视频已选" : "等待选择视频"}</TokenBadge>
-              <TokenBadge tone={statusTone}>{statusLabel}</TokenBadge>
-              {latestResultPath ? <Badge variant="secondary">结果: {pathBasename(latestResultPath)}</Badge> : null}
+          <div className="overflow-hidden rounded-md border border-border bg-background/55">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card/80 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <TokenBadge tone={statusTone}>{statusLabel}</TokenBadge>
+                {latestResultPath ? <Badge variant="secondary">结果: {pathBasename(latestResultPath)}</Badge> : null}
+              </div>
+              <Badge variant="outline">质量: {qualityLabel}</Badge>
             </div>
-            <div className="grid gap-1 text-sm text-muted-foreground">
-              <p>{statusMessage}</p>
-              {latestResultPath ? <p className="truncate-path text-xs">位置: {latestResultPath}</p> : null}
-            </div>
-            <div className="grid gap-3">
-              <div className="grid gap-3 sm:grid-cols-2">
+
+            <div className="grid gap-4 p-4">
+              <div className="rounded-md bg-muted/35 px-3 py-2 text-sm leading-6 text-muted-foreground">
+                <p>{statusMessage}</p>
+                {latestResultPath ? <p className="truncate-path text-xs">位置: {latestResultPath}</p> : null}
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-[minmax(190px,0.8fr)_minmax(0,1fr)] sm:items-end">
+                <label
+                  className={cn(
+                    "flex h-9 cursor-pointer items-center justify-between gap-3 rounded-md border px-3 text-sm transition-colors",
+                    props.beautifyTeeth
+                      ? "border-primary/40 bg-primary/5 text-foreground"
+                      : "border-border bg-background/70 text-foreground hover:bg-muted/35",
+                  )}
+                >
+                  <span className="flex min-w-0 items-center gap-2 font-medium">
+                    <Checkbox
+                      checked={props.beautifyTeeth}
+                      onCheckedChange={(value) => props.onBeautifyTeethChange(Boolean(value))}
+                    />
+                    牙齿美化
+                  </span>
+                  <Badge variant={props.beautifyTeeth ? "default" : "secondary"}>
+                    {props.beautifyTeeth ? "开启" : "关闭"}
+                  </Badge>
+                </label>
                 <div className="grid gap-2">
-                  <Label>引擎</Label>
-                  <Select value={props.engine} onValueChange={props.onEngineChange}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="tuilionnx">TuiliONNX</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid gap-2">
-                  <Label>质量预设</Label>
+                  <Label className="sr-only">质量预设</Label>
                   <Select value={props.qualityPreset} onValueChange={props.onQualityPresetChange}>
                     <SelectTrigger>
                       <SelectValue />
@@ -199,13 +218,26 @@ export function AvatarSection(props: Props) {
                   </Select>
                 </div>
               </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <Badge variant="outline">音频: {pathBasename(props.audioPath || "未选择")}</Badge>
-              <Badge variant="outline">质量: {props.qualityPreset === "speed" ? "速度" : props.qualityPreset === "hd" ? "高清" : "清晰"}</Badge>
-              <Badge variant="outline">字幕: 后处理模块</Badge>
-            </div>
-            <div className="grid min-h-[76px] content-start gap-2">
+
+              <div className="grid gap-2 border-t border-border pt-3 sm:grid-cols-3">
+                <div className="min-w-0">
+                  <div className="control-label">音频</div>
+                  <div className="truncate-path mt-1 text-sm font-medium text-foreground">
+                    {pathBasename(props.audioPath || "未选择")}
+                  </div>
+                </div>
+                <div className="min-w-0">
+                  <div className="control-label">参考视频</div>
+                  <div className="truncate-path mt-1 text-sm font-medium text-foreground">
+                    {pathBasename(props.referenceVideoPath || "未选择")}
+                  </div>
+                </div>
+                <div className="min-w-0">
+                  <div className="control-label">字幕</div>
+                  <div className="truncate-path mt-1 text-sm font-medium text-foreground">后处理模块</div>
+                </div>
+              </div>
+
               {generateDisabledReason ? (
                 <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning-foreground">
                   {generateDisabledReason}
