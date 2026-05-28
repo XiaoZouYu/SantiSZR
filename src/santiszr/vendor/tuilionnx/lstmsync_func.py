@@ -24,6 +24,13 @@ __dir__ = []
 
 DEFAULT_MAX_REFERENCE_EDGE = 720
 DEFAULT_OPENCV_THREADS = 2
+DEFAULT_INSIGHTFACE_DETECT_SIZE = 512
+DEFAULT_FACE_DETECT_THRESHOLD = 0.5
+DEFAULT_FACE_DETECT_FALLBACK_THRESHOLD = 0.25
+DEFAULT_FACE_MIN_WIDTH = 50
+DEFAULT_FACE_MIN_HEIGHT = 80
+DEFAULT_FACE_FALLBACK_MIN_WIDTH = 30
+DEFAULT_FACE_FALLBACK_MIN_HEIGHT = 45
 
 
 def _env_int(name: str, default: int) -> int:
@@ -32,6 +39,17 @@ def _env_int(name: str, default: int) -> int:
         return default
     try:
         value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
     except ValueError:
         return default
     return value if value > 0 else default
@@ -280,7 +298,7 @@ class AlignRestore(object):
         return M.cpu().numpy(), p_bias
 
 
-INSIGHTFACE_DETECT_SIZE = 512
+INSIGHTFACE_DETECT_SIZE = _env_int("SANTISZR_TUILIONNX_DETECT_SIZE", DEFAULT_INSIGHTFACE_DETECT_SIZE)
 
 
 class FaceDetector:
@@ -301,59 +319,109 @@ class FaceDetector:
                 continue
             _assert_ort_cuda_session(session, label=f"InsightFace {name} model")
 
-    def __call__(self, frame, threshold=0.5):
+    def __call__(self, frame, threshold=None):
         f_h, f_w, _ = frame.shape
+        strict_threshold = (
+            _env_float("SANTISZR_TUILIONNX_FACE_DETECT_THRESHOLD", DEFAULT_FACE_DETECT_THRESHOLD)
+            if threshold is None
+            else float(threshold)
+        )
+        fallback_threshold = min(
+            strict_threshold,
+            _env_float(
+                "SANTISZR_TUILIONNX_FACE_DETECT_FALLBACK_THRESHOLD",
+                DEFAULT_FACE_DETECT_FALLBACK_THRESHOLD,
+            ),
+        )
+        min_width = _env_int("SANTISZR_TUILIONNX_FACE_MIN_WIDTH", DEFAULT_FACE_MIN_WIDTH)
+        min_height = _env_int("SANTISZR_TUILIONNX_FACE_MIN_HEIGHT", DEFAULT_FACE_MIN_HEIGHT)
+        fallback_min_width = min(
+            min_width,
+            _env_int("SANTISZR_TUILIONNX_FACE_FALLBACK_MIN_WIDTH", DEFAULT_FACE_FALLBACK_MIN_WIDTH),
+        )
+        fallback_min_height = min(
+            min_height,
+            _env_int("SANTISZR_TUILIONNX_FACE_FALLBACK_MIN_HEIGHT", DEFAULT_FACE_FALLBACK_MIN_HEIGHT),
+        )
 
-        faces = self.app.get(frame)
+        attempts = [
+            (frame, strict_threshold, min_width, min_height),
+            (frame, fallback_threshold, fallback_min_width, fallback_min_height),
+        ]
+        try:
+            # InsightFace examples commonly pass OpenCV BGR frames. The upstream
+            # TuiliONNX path passes RGB frames, so retry with swapped channels
+            # when strict detection fails.
+            swapped_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            attempts.extend(
+                [
+                    (swapped_frame, strict_threshold, min_width, min_height),
+                    (swapped_frame, fallback_threshold, fallback_min_width, fallback_min_height),
+                ]
+            )
+        except Exception:
+            pass
 
         get_face_store = None
-        max_size = 0
-
-        if len(faces) == 0:
-            return None, None
-        else:
-            for face in faces:
-                bbox = face.bbox.astype(np.int_).tolist()
-                w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                if w < 50 or h < 80:
-                    continue
-                if w / h > 1.5 or w / h < 0.2:
-                    continue
-                if face.det_score < threshold:
-                    continue
-                size_now = w * h
-
-                if size_now > max_size:
-                    max_size = size_now
-                    get_face_store = face
+        for candidate_frame, candidate_threshold, candidate_min_width, candidate_min_height in attempts:
+            faces = self.app.get(candidate_frame)
+            get_face_store = self._select_largest_face(
+                faces,
+                threshold=candidate_threshold,
+                min_width=candidate_min_width,
+                min_height=candidate_min_height,
+            )
+            if get_face_store is not None:
+                break
 
         if get_face_store is None:
             return None, None
-        else:
-            face = get_face_store
-            lmk = np.round(face.landmark_2d_106).astype(np.int_)
 
-            halk_face_coord = np.mean([lmk[74], lmk[73]], axis=0)  # lmk[73]
+        face = get_face_store
+        lmk = np.round(face.landmark_2d_106).astype(np.int_)
 
-            sub_lmk = lmk[LMK_ADAPT_ORIGIN_ORDER]
-            halk_face_dist = np.max(sub_lmk[:, 1]) - halk_face_coord[1]
-            upper_bond = halk_face_coord[1] - halk_face_dist  # *0.94
+        halk_face_coord = np.mean([lmk[74], lmk[73]], axis=0)  # lmk[73]
 
-            x1, y1, x2, y2 = (np.min(sub_lmk[:, 0]), int(upper_bond), np.max(sub_lmk[:, 0]), np.max(sub_lmk[:, 1]))
+        sub_lmk = lmk[LMK_ADAPT_ORIGIN_ORDER]
+        halk_face_dist = np.max(sub_lmk[:, 1]) - halk_face_coord[1]
+        upper_bond = halk_face_coord[1] - halk_face_dist  # *0.94
 
-            if y2 - y1 <= 0 or x2 - x1 <= 0 or x1 < 0:
-                x1, y1, x2, y2 = face.bbox.astype(np.int_).tolist()
+        x1, y1, x2, y2 = (np.min(sub_lmk[:, 0]), int(upper_bond), np.max(sub_lmk[:, 0]), np.max(sub_lmk[:, 1]))
 
-            y2 += int((x2 - x1) * 0.1)
-            x1 -= int((x2 - x1) * 0.05)
-            x2 += int((x2 - x1) * 0.05)
+        if y2 - y1 <= 0 or x2 - x1 <= 0 or x1 < 0:
+            x1, y1, x2, y2 = face.bbox.astype(np.int_).tolist()
 
-            x1 = max(0, x1)
-            y1 = max(0, y1)
-            x2 = min(f_w, x2)
-            y2 = min(f_h, y2)
+        y2 += int((x2 - x1) * 0.1)
+        x1 -= int((x2 - x1) * 0.05)
+        x2 += int((x2 - x1) * 0.05)
 
-            return (x1, y1, x2, y2), lmk
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(f_w, x2)
+        y2 = min(f_h, y2)
+
+        return (x1, y1, x2, y2), lmk
+
+    def _select_largest_face(self, faces, *, threshold, min_width, min_height):
+        get_face_store = None
+        max_size = 0
+
+        for face in faces:
+            bbox = face.bbox.astype(np.int_).tolist()
+            w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            if w < min_width or h < min_height:
+                continue
+            if w / h > 1.5 or w / h < 0.2:
+                continue
+            if face.det_score < threshold:
+                continue
+            size_now = w * h
+
+            if size_now > max_size:
+                max_size = size_now
+                get_face_store = face
+
+        return get_face_store
 
 
 def cuda_to_int(cuda_str: str) -> int:
